@@ -43,33 +43,33 @@ def _authorized(update: Update) -> bool:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Heritage Ring · Assistente AI (Fase 1 — Shopify).\n\n"
-        "Comandi:\n"
-        "• /report — report di ieri da Shopify\n"
-        "• /pl ANNO MESE — P&L mensile (es. /pl 2026 4)\n\n"
-        "Oppure scrivimi una domanda libera (es. \"come è andato ieri?\")."
+        "Heritage Ring · AI Assistant (Phase 1 — Shopify).\n\n"
+        "Commands:\n"
+        "• /report — yesterday's Shopify report\n"
+        "• /pl YEAR MONTH — monthly P&L (e.g. /pl 2026 4)\n\n"
+        "Or just ask me a question (e.g. \"how did yesterday go?\")."
     )
 
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authorized(update):
-        await update.message.reply_text("⛔️ Chat non autorizzata.")
+        await update.message.reply_text("⛔️ Unauthorized chat.")
         return
 
-    msg = await update.message.reply_text("⏳ Genero il report Shopify di ieri…")
+    msg = await update.message.reply_text("⏳ Generating yesterday's Shopify report…")
     try:
         # build_daily_report fa I/O di rete bloccante: lo eseguo in un thread
         _, text = await asyncio.to_thread(build_daily_report)
         await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nella generazione del report")
-        await msg.edit_text(f"❌ Errore nel report: {exc}")
+        await msg.edit_text(f"❌ Report error: {exc}")
 
 
 async def cmd_pl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/pl ANNO MESE -> P&L mensile deterministico dal database."""
     if not _authorized(update):
-        await update.message.reply_text("⛔️ Chat non autorizzata.")
+        await update.message.reply_text("⛔️ Unauthorized chat.")
         return
     try:
         year = int(context.args[0])
@@ -77,16 +77,16 @@ async def cmd_pl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not (1 <= month <= 12):
             raise ValueError
     except (IndexError, ValueError):
-        await update.message.reply_text("Uso: /pl ANNO MESE — es. /pl 2026 4")
+        await update.message.reply_text("Usage: /pl YEAR MONTH — e.g. /pl 2026 4")
         return
 
-    msg = await update.message.reply_text(f"⏳ Calcolo il P&L {year}-{month:02d}…")
+    msg = await update.message.reply_text(f"⏳ Computing the {year}-{month:02d} P&L…")
     try:
         text = await asyncio.to_thread(build_monthly_pl, year, month)
         await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel P&L mensile")
-        await msg.edit_text(f"❌ Errore nel P&L: {exc}")
+        await msg.edit_text(f"❌ P&L error: {exc}")
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -105,7 +105,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nella risposta libera")
-        await update.message.reply_text(f"❌ Errore: {exc}")
+        await update.message.reply_text(f"❌ Error: {exc}")
 
 
 def build_application() -> Application:

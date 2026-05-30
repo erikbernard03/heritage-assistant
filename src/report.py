@@ -87,22 +87,22 @@ def format_report(m: DailyMetrics) -> str:
     fixed_line = ""
     if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
         fixed_line = (
-            f"   • Quota costi fissi: −${m.fixed_cost_daily:,.2f}\n"
+            f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}\n"
         )
     return (
-        f"📊 *Report Shopify — {m.day}*\n"
-        f"_(valuta: USD)_\n\n"
-        f"🛒 Ordini: *{m.num_orders}*\n"
+        f"📊 *Shopify report — {m.day}*\n"
+        f"_(currency: USD)_\n\n"
+        f"🛒 Orders: *{m.num_orders}*\n"
         f"💰 Revenue: *${m.revenue:,.2f}*\n"
         f"🧾 AOV: ${m.aov:,.2f}\n\n"
-        f"*Costi del giorno*\n"
-        f"   • COGS prodotti: −${m.cogs_total:,.2f}\n"
-        f"   • Spedizione ($7 × {m.num_orders}): −${m.shipping_total:,.2f}\n"
-        f"   • Fee pagamenti (7.5%): −${m.payment_fees:,.2f}\n"
+        f"*Costs for the day*\n"
+        f"   • Product COGS: −${m.cogs_total:,.2f}\n"
+        f"   • Shipping ($7 × {m.num_orders}): −${m.shipping_total:,.2f}\n"
+        f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}\n"
         f"{fixed_line}\n"
         f"*Net profit*\n"
-        f"   • Operativo (senza costi fissi): *${m.net_profit_operativo:,.2f}*\n"
-        f"   • Netto (con costi fissi): *${m.net_profit_netto:,.2f}*\n"
+        f"   • Operating (excl. fixed costs): *${m.net_profit_operativo:,.2f}*\n"
+        f"   • Net (incl. fixed costs): *${m.net_profit_netto:,.2f}*\n"
     )
 
 
@@ -122,7 +122,7 @@ def build_monthly_pl(year: int, month: int) -> str:
     store = SupabaseStore()
     rows = store.get_daily_metrics_range(start, end)
     if not rows:
-        return f"📒 *P&L {year}-{month:02d}* — nessun dato disponibile per questo mese."
+        return f"📒 *P&L {year}-{month:02d}* — no data available for this month."
 
     def _s(key: str) -> float:
         return sum(float(r.get(key) or 0) for r in rows)
@@ -139,19 +139,19 @@ def build_monthly_pl(year: int, month: int) -> str:
     aov = (revenue / num_orders) if num_orders else 0.0
 
     return (
-        f"📒 *P&L {year}-{month:02d}* _(USD, {len(rows)} giorni con dati)_\n\n"
-        f"🛒 Ordini: *{num_orders}*\n"
+        f"📒 *P&L {year}-{month:02d}* _(USD, {len(rows)} days with data)_\n\n"
+        f"🛒 Orders: *{num_orders}*\n"
         f"💰 Revenue: *${revenue:,.2f}*\n"
         f"🧾 AOV: ${aov:,.2f}\n\n"
-        f"*Costi*\n"
+        f"*Costs*\n"
         f"   • COGS: −${cogs:,.2f}\n"
-        f"   • Spedizione: −${shipping:,.2f}\n"
-        f"   • Fee pagamenti: −${fees:,.2f}\n"
-        f"   • Spesa ads: −${ads:,.2f}\n"
-        f"   • Costi fissi: −${fixed:,.2f}\n\n"
-        f"*Net profit del mese*\n"
-        f"   • Operativo: *${op:,.2f}*\n"
-        f"   • Netto: *${net:,.2f}*\n"
+        f"   • Shipping: −${shipping:,.2f}\n"
+        f"   • Payment fees: −${fees:,.2f}\n"
+        f"   • Ad spend: −${ads:,.2f}\n"
+        f"   • Fixed costs: −${fixed:,.2f}\n\n"
+        f"*Net profit for the month*\n"
+        f"   • Operating: *${op:,.2f}*\n"
+        f"   • Net: *${net:,.2f}*\n"
     )
 
 
