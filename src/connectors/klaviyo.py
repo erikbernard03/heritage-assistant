@@ -131,36 +131,26 @@ class KlaviyoConnector:
 
     def get_campaign_names(self, campaign_ids: list[str]) -> dict[str, str]:
         """
-        Mappa campaign_id -> nome (best-effort). I report restituiscono solo gli id;
-        i nomi rendono leggibili report e risposte AI. Se la chiamata fallisce, si
-        prosegue senza nomi (non blocca il report).
+        Mappa campaign_id -> nome. I report restituiscono solo gli id; i nomi rendono
+        leggibili report e risposte AI.
+
+        Risoluzione diretta per ID (GET /campaigns/{id}/): affidabile a prescindere da
+        stato (anche campagne inviate/archiviate) e paginazione. Una GET leggera per id
+        unico; gli errori sul singolo id non bloccano il report.
         """
         names: dict[str, str] = {}
-        if not campaign_ids:
-            return names
-        # filtro per email; i campaign-values-report sono tipicamente email
-        params = (
-            "?filter=equals(messages.channel,'email')"
-            "&fields[campaign]=name&page[size]=100"
-        )
-        try:
-            data = self._request("GET", f"/campaigns/{params}")
-            wanted = set(campaign_ids)
-            for c in data.get("data", []):
-                cid = c.get("id")
-                if cid in wanted:
-                    names[cid] = (c.get("attributes") or {}).get("name") or ""
-            # pagine successive (best-effort, limitate)
-            next_url = ((data.get("links") or {}).get("next"))
-            pages = 0
-            while next_url and pages < 5 and len(names) < len(wanted):
-                data = self._request("GET", next_url)
-                for c in data.get("data", []):
-                    cid = c.get("id")
-                    if cid in wanted:
-                        names[cid] = (c.get("attributes") or {}).get("name") or ""
-                next_url = ((data.get("links") or {}).get("next"))
-                pages += 1
-        except Exception as exc:  # noqa: BLE001 — i nomi sono opzionali
-            print(f"[klaviyo] risoluzione nomi campagne saltata: {exc}")
+        seen: set[str] = set()
+        for cid in campaign_ids:
+            cid = (cid or "").strip()
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            try:
+                data = self._request("GET", f"/campaigns/{cid}/")
+                attrs = (data.get("data") or {}).get("attributes") or {}
+                name = attrs.get("name")
+                if name:
+                    names[cid] = name
+            except Exception as exc:  # noqa: BLE001 — i nomi sono opzionali
+                print(f"[klaviyo] name lookup failed for campaign {cid}: {exc}")
         return names
