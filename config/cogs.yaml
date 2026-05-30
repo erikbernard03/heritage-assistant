@@ -1,0 +1,53 @@
+# Heritage Ring — Tabella costi (COGS) per il calcolo del net profit
+# Tutti i valori in USD. Il match prodotto->costo avviene per HANDLE Shopify (preferito) o per titolo.
+# REGOLA DI SICUREZZA: qualsiasi SKU/prodotto non elencato, o con costo $0, usa default_cogs = 3.
+default_cogs: 3          # fallback per SKU sconosciuti o costo $0
+shipping_per_order: 7    # USD, flat per ordine
+payment_fee_rate: 0.075  # 7.5% sul revenue
+# ---- Costi fissi mensili (USD) ----
+fixed_costs_monthly:
+  personnel: 3257
+  software: 2411
+  total: 5668
+include_fixed_costs_in_net_profit: true   # se true, alloca total/30 al giorno
+# ---- Prodotti custom / personalizzati (costo specifico per handle) ----
+custom_products:
+  personalized-sterling-silver-signet-ring: 76.54
+  personalized-wooden-ring-box: 3
+  personalized-white-gold-plated-signet-ring: 17
+  personalized-gold-plated-signet-ring: 17
+  personalized-whitegold-palted-square-signet-ring-with-engraved-date: 17   # White Gold Plated Square
+  personalized-gold-plated-square-signet-ring: 17                            # Gold Plated Square
+# ---- Regola per collection: tutto ciò che sta in queste collection = $3 ----
+collection_cogs:
+  classic-rings: 3
+  bracelets: 3
+# ---- Elenco esplicito (ridondante ma utile come riferimento/controllo) ----
+# Classic Rings (13) - tutti $3
+classic_rings:
+  carnelian-signet-ring: 3
+  tiger-s-eye-signet-ring-copy: 3        # Tiger's Eye Square Signet Ring
+  green-stone-signet-ring: 3
+  lapis-lazuli-signet-ring: 3
+  turquoise-blue-signet-ring: 3
+  tiger-s-eye-signet-ring: 3
+  black-onyx-signet-ring: 3
+  diamond-inset-ring: 3
+  minimal-oval-signet-ring: 3
+  black-stone-square-signet-ring: 3
+  oval-carnelian-pinky-ring: 3
+  oval-pinky-ring: 3                      # Oval Onyx Pinky Ring
+  cross-texture-ring: 3
+# Bracelets (11) - tutti $3
+bracelets:
+  faith-black-onyx-pearls: 3
+  faith-tiger-eye-pearls: 3
+  black-onyx-bead-bracelet: 3
+  tiger-eye-bead-bracelet: 3
+  cable-bracelet: 3
+  fleur-de-lis-bracelet-1: 3
+  turquoise-bead-bracelet: 3
+  marble-bead-bracelet: 3
+  carnelian-bead-bracelet: 3
+  white-edge-bracelet: 3
+  blue-edge-bracelet: 3

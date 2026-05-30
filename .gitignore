@@ -1,0 +1,38 @@
+# ---- Credenziali e segreti (MAI su git) ----
+.env
+.env.local
+*.env
+!.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Log e dati locali ----
+*.log
+logs/
+*.sqlite
+*.db
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ---- Shopify CLI ----
+.shopify/

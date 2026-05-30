@@ -1,0 +1,19 @@
+# Configurazione Shopify CLI per l'app (Dev Dashboard).
+# Serve a dichiarare gli Admin API scopes e la API version dell'app.
+# `client_id` viene popolato dal Dev Dashboard / dal comando `shopify app config link`.
+#
+# Comandi utili (richiedono Node + Shopify CLI: `npm i -g @shopify/cli`):
+#   shopify app config link      # collega questo file all'app del Dev Dashboard
+#   shopify app deploy           # pubblica gli scope dichiarati qui sull'app
+#   shopify app config push      # aggiorna la config sull'app
+# Dopo il deploy degli scope, INSTALLA l'app sullo store dal Dev Dashboard.
+
+name = "heritage-assistant"
+# client_id = "<incollato dal Dev Dashboard dopo 'config link'>"
+
+[access_scopes]
+# SOLO lettura — coerente con il sistema read-only.
+scopes = "read_orders,read_products,read_fulfillments,read_inventory"
+
+[webhooks]
+api_version = "2026-04"

@@ -1,0 +1,9 @@
+# Heritage Ring — dipendenze Fase 1 (solo Shopify)
+python-dotenv==1.0.1
+requests==2.32.3
+PyYAML==6.0.2
+supabase==2.9.1
+python-telegram-bot==21.6
+pytz==2024.2
+# Anthropic: predisposto per le risposte libere (non usato per i numeri)
+anthropic==0.39.0
