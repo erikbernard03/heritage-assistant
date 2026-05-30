@@ -31,6 +31,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Modello Claude per le risposte libere (solo linguaggio, mai i numeri).
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
 
+# ---- Meta (Fase 2, SOLA LETTURA: ads_read + read_insights) ----
+# System User token via Business Manager. MAI ads_management.
+META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")
+META_AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "")
+META_API_VERSION = os.getenv("META_API_VERSION", "v21.0")
+
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
 # ---------------------------------------------------------------------------

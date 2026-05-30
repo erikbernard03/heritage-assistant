@@ -68,8 +68,16 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 | `TELEGRAM_CHAT_ID` | ✅ | ✅ | `598516150` |
 | `ANTHROPIC_API_KEY` | ✅ | ⬜️ | (la tua key `sk-ant-...`) — serve solo al bot |
 | `ANTHROPIC_MODEL` | ✅ | ⬜️ | `claude-opus-4-8` (opzionale, è il default) |
+| `META_ACCESS_TOKEN` | ✅ | ✅ | System User token (Business Manager, read-only) |
+| `META_AD_ACCOUNT_ID` | ✅ | ✅ | ID account pubblicitario (es. `act_123…` o `123…`) |
+| `META_API_VERSION` | ✅ | ✅ | `v21.0` (opzionale, è il default) |
 | `TIMEZONE` | ✅ | ✅ | `Europe/Rome` |
 | `RAILWAY_CRON_GUARD` | ⬜️ | ✅ | `1` — **solo sul cron** |
+
+> **Meta (Fase 2):** esegui anche la migration `supabase/migrations/002_meta.sql` nel
+> SQL Editor di Supabase (crea le tabelle `meta_daily` e `meta_campaigns`). Le variabili
+> `META_*` vanno su **entrambi** i servizi: il `cron` fa la pull insights notturna,
+> il `bot` la riusa dalla cache DB (1 sola chiamata Meta al giorno).
 
 > 🔒 Non committare mai questi valori: vivono solo nelle Variables di Railway (e nel tuo `.env` locale).
 

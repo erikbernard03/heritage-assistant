@@ -1,13 +1,14 @@
 """
-Orchestratore del report giornaliero (Fase 1, solo Shopify).
+Orchestratore del report giornaliero (Fase 1 Shopify + Fase 2 Meta).
 
 Flusso:
   1. calcola l'intervallo "ieri" in Europe/Rome
   2. tira gli ordini da Shopify (client credentials grant)
   3. costruisce la mappa product_id -> handle (per il COGS)
-  4. calcola le metriche deterministiche (net profit, AOV, ...)
-  5. (opzionale) salva ordini/line items/metriche su Supabase
-  6. formatta il messaggio Telegram
+  4. Meta (sola lettura): una pull insights/giorno (cache su DB), spesa in USD
+  5. calcola le metriche deterministiche (net profit con spesa ads sottratta, AOV, ...)
+  6. (opzionale) salva ordini/line items/metriche/Meta su Supabase
+  7. formatta il messaggio Telegram (Shopify + Meta: spend/ROAS/CPA + campagne)
 
 Nessun LLM tocca i numeri.
 """
@@ -44,6 +45,7 @@ def yesterday_window(now: Optional[datetime] = None) -> DayWindow:
 def build_daily_report(
     window: Optional[DayWindow] = None,
     persist: bool = True,
+    force_meta: bool = False,
 ) -> tuple[DailyMetrics, str]:
     """Costruisce le metriche + il testo del report per la finestra indicata (default: ieri)."""
     window = window or yesterday_window()
@@ -56,17 +58,71 @@ def build_daily_report(
     for o in orders:
         o["_day_rome"] = window.day_str
 
+    # Meta (Fase 2): una sola pull insights/giorno (cache su DB); spesa in USD.
+    meta_daily, meta_campaigns, meta_spend = _load_meta(
+        window.day_str, persist=persist, force=force_meta
+    )
+
     metrics = compute_daily_metrics(
         day=window.day_str,
         orders=orders,
         handle_map=handle_map,
-        ads_spend=0.0,  # Fase 1: nessuna piattaforma ads collegata
+        ads_spend=meta_spend,  # Fase 2: spesa Meta (USD) sottratta dal net profit
     )
 
     if persist:
         _persist(orders, handle_map, metrics)
 
-    return metrics, format_report(metrics)
+    return metrics, format_report(metrics, meta_daily, meta_campaigns)
+
+
+def _load_meta(day: str, persist: bool, force: bool = False):
+    """
+    Restituisce (meta_daily_dict | None, meta_campaigns: list[dict], meta_spend_usd).
+
+    Regola anti-ban: UNA pull insights al giorno. Se i dati del giorno sono già nel
+    database, vengono riusati senza chiamare l'API Meta (i /report manuali non
+    generano nuove chiamate). Se Meta non è configurato o fallisce, il report
+    prosegue comunque in modalità solo-Shopify (meta_spend = 0).
+    """
+    if not (settings.META_ACCESS_TOKEN and settings.META_AD_ACCOUNT_ID):
+        return None, [], 0.0
+
+    store = None
+    try:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] Supabase non disponibile per Meta: {exc}")
+
+    # 1) prova la cache su DB (evita una nuova chiamata API)
+    if store is not None and not force:
+        cached = store.get_meta_daily_for_day(day)
+        if cached:
+            campaigns = store.get_meta_campaigns_for_day(day)
+            return cached, campaigns, float(cached.get("spend") or 0.0)
+
+    # 2) nessuna cache: UNA pull insights dal connettore Meta
+    try:
+        from src.connectors.meta import MetaConnector
+        from src.metrics.meta import compute_meta_metrics
+
+        meta = MetaConnector()
+        currency = meta.get_account_currency()
+        raw = meta.get_daily_campaign_insights(day)
+        computed = compute_meta_metrics(day, raw, account_currency=currency)
+
+        if persist and store is not None:
+            store.upsert_meta_daily(computed)
+            store.upsert_meta_campaigns(computed)
+
+        daily_dict = computed.as_db_row()
+        campaign_dicts = [c.as_db_row() for c in computed.campaigns]
+        return daily_dict, campaign_dicts, computed.spend
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] pull Meta saltata: {exc}")
+        return None, [], 0.0
 
 
 def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics) -> None:
@@ -82,15 +138,22 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         print(f"[report] persistenza Supabase saltata: {exc}")
 
 
-def format_report(m: DailyMetrics) -> str:
+def format_report(
+    m: DailyMetrics,
+    meta_daily: Optional[dict] = None,
+    meta_campaigns: Optional[list[dict]] = None,
+) -> str:
     """Formatta il report Telegram (Markdown). Tutti i valori in USD."""
     fixed_line = ""
     if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
-        fixed_line = (
-            f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}\n"
-        )
-    return (
-        f"📊 *Shopify report — {m.day}*\n"
+        fixed_line = f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}\n"
+
+    ads_line = ""
+    if m.ads_spend > 0:
+        ads_line = f"   • Ad spend (Meta): −${m.ads_spend:,.2f}\n"
+
+    report = (
+        f"📊 *Daily report — {m.day}*\n"
         f"_(currency: USD)_\n\n"
         f"🛒 Orders: *{m.num_orders}*\n"
         f"💰 Revenue: *${m.revenue:,.2f}*\n"
@@ -99,11 +162,53 @@ def format_report(m: DailyMetrics) -> str:
         f"   • Product COGS: −${m.cogs_total:,.2f}\n"
         f"   • Shipping ($7 × {m.num_orders}): −${m.shipping_total:,.2f}\n"
         f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}\n"
+        f"{ads_line}"
         f"{fixed_line}\n"
         f"*Net profit*\n"
         f"   • Operating (excl. fixed costs): *${m.net_profit_operativo:,.2f}*\n"
         f"   • Net (incl. fixed costs): *${m.net_profit_netto:,.2f}*\n"
     )
+    report += _format_meta_section(meta_daily, meta_campaigns)
+    return report
+
+
+def _format_meta_section(
+    meta_daily: Optional[dict], meta_campaigns: Optional[list[dict]]
+) -> str:
+    """Sezione Meta: totali + breakdown per campagna (USD)."""
+    if not meta_daily:
+        if settings.META_ACCESS_TOKEN and settings.META_AD_ACCOUNT_ID:
+            return "\n📣 *Meta Ads*: data not available for this day.\n"
+        return ""  # Meta non configurato: nessuna sezione
+
+    spend = float(meta_daily.get("spend") or 0)
+    revenue = float(meta_daily.get("revenue") or 0)
+    orders = int(meta_daily.get("orders") or 0)
+    roas = float(meta_daily.get("roas") or 0)
+    cpa = float(meta_daily.get("cpa") or 0)
+
+    out = (
+        f"\n📣 *Meta Ads — {meta_daily.get('day')}* _(USD)_\n"
+        f"   • Spend: *${spend:,.2f}*\n"
+        f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
+        f"   • CPA: ${cpa:,.2f}\n"
+        f"   • Attributed revenue: ${revenue:,.2f} · purchases: {orders}\n"
+    )
+
+    campaigns = meta_campaigns or []
+    if campaigns:
+        out += "\n*Campaign breakdown* (top by spend):\n"
+        for c in campaigns[:8]:
+            name = (c.get("campaign_name") or "(no name)")[:34]
+            c_spend = float(c.get("spend") or 0)
+            c_rev = float(c.get("revenue") or 0)
+            c_ord = int(c.get("orders") or 0)
+            c_cvr = float(c.get("cvr") or 0) * 100
+            out += (
+                f"• *{name}* — spend ${c_spend:,.0f} · "
+                f"rev ${c_rev:,.0f} · ord {c_ord} · CVR {c_cvr:.1f}%\n"
+            )
+    return out
 
 
 def build_monthly_pl(year: int, month: int) -> str:
