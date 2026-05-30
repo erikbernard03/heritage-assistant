@@ -106,6 +106,55 @@ def format_report(m: DailyMetrics) -> str:
     )
 
 
+def build_monthly_pl(year: int, month: int) -> str:
+    """
+    P&L mensile DETERMINISTICO (codice puro, nessuna AI): aggrega le righe di
+    daily_metrics del mese richiesto. Tutti i valori in USD.
+    """
+    from calendar import monthrange
+
+    from src.db.supabase_client import SupabaseStore
+
+    last_day = monthrange(year, month)[1]
+    start = f"{year:04d}-{month:02d}-01"
+    end = f"{year:04d}-{month:02d}-{last_day:02d}"
+
+    store = SupabaseStore()
+    rows = store.get_daily_metrics_range(start, end)
+    if not rows:
+        return f"📒 *P&L {year}-{month:02d}* — nessun dato disponibile per questo mese."
+
+    def _s(key: str) -> float:
+        return sum(float(r.get(key) or 0) for r in rows)
+
+    revenue = _s("revenue")
+    num_orders = int(_s("num_orders"))
+    cogs = _s("cogs_total")
+    shipping = _s("shipping_total")
+    fees = _s("payment_fees")
+    ads = _s("ads_spend")
+    fixed = _s("fixed_cost_daily")
+    op = _s("net_profit_operativo")
+    net = _s("net_profit_netto")
+    aov = (revenue / num_orders) if num_orders else 0.0
+
+    return (
+        f"📒 *P&L {year}-{month:02d}* _(USD, {len(rows)} giorni con dati)_\n\n"
+        f"🛒 Ordini: *{num_orders}*\n"
+        f"💰 Revenue: *${revenue:,.2f}*\n"
+        f"🧾 AOV: ${aov:,.2f}\n\n"
+        f"*Costi*\n"
+        f"   • COGS: −${cogs:,.2f}\n"
+        f"   • Spedizione: −${shipping:,.2f}\n"
+        f"   • Fee pagamenti: −${fees:,.2f}\n"
+        f"   • Spesa ads: −${ads:,.2f}\n"
+        f"   • Costi fissi: −${fixed:,.2f}\n\n"
+        f"*Net profit del mese*\n"
+        f"   • Operativo: *${op:,.2f}*\n"
+        f"   • Netto: *${net:,.2f}*\n"
+    )
+
+
 if __name__ == "__main__":
     # Stampa a video il report di ieri (Shopify reale), senza Telegram.
     _, _text = build_daily_report(persist=False)

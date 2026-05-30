@@ -83,6 +83,41 @@ class SupabaseStore:
         """Upsert della riga giornaliera (chiave = day)."""
         self.client.table("daily_metrics").upsert(metrics.as_db_row()).execute()
 
+    # ----------------------------------------------------- letture (read-only)
+    def get_recent_daily_metrics(self, days: int = 14) -> list[dict]:
+        """Ultime N righe di daily_metrics (più recenti prima)."""
+        res = (
+            self.client.table("daily_metrics")
+            .select("*")
+            .order("day", desc=True)
+            .limit(days)
+            .execute()
+        )
+        return res.data or []
+
+    def get_daily_metrics_for_day(self, day: str) -> Optional[dict]:
+        """Riga di metriche per un giorno specifico (YYYY-MM-DD), se esiste."""
+        res = (
+            self.client.table("daily_metrics")
+            .select("*")
+            .eq("day", day)
+            .limit(1)
+            .execute()
+        )
+        return (res.data or [None])[0]
+
+    def get_daily_metrics_range(self, start_day: str, end_day: str) -> list[dict]:
+        """Righe di metriche nell'intervallo [start_day, end_day] inclusi."""
+        res = (
+            self.client.table("daily_metrics")
+            .select("*")
+            .gte("day", start_day)
+            .lte("day", end_day)
+            .order("day", desc=False)
+            .execute()
+        )
+        return res.data or []
+
 
 def _num(value) -> float:
     try:

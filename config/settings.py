@@ -28,6 +28,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Modello Claude per le risposte libere (solo linguaggio, mai i numeri).
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-8")
 
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
