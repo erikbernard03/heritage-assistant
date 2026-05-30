@@ -89,6 +89,33 @@ async def cmd_pl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.edit_text(f"❌ P&L error: {exc}")
 
 
+async def _send_chunks(message, text: str) -> None:
+    """Invia testo lungo in più messaggi (limite Telegram ~4096 char)."""
+    chunk = 3800
+    for i in range(0, len(text), chunk):
+        await message.reply_text(text[i : i + chunk])
+
+
+async def cmd_klaviyo_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/klaviyo_check (admin) -> esegue la diagnostica Klaviyo e la invia in chat."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+
+    msg = await update.message.reply_text("⏳ Running Klaviyo diagnostic…")
+    try:
+        from src.diagnostics import klaviyo_diagnostic
+
+        text = await asyncio.to_thread(klaviyo_diagnostic)
+        # niente parse_mode: il testo può contenere caratteri speciali (nomi campagne)
+        await msg.edit_text(text[:3800])
+        if len(text) > 3800:
+            await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nella diagnostica Klaviyo")
+        await msg.edit_text(f"❌ Klaviyo diagnostic error: {exc}")
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Messaggi liberi -> risposta AI (Claude legge i dati dal DB)."""
     if not _authorized(update):
@@ -115,6 +142,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("pl", cmd_pl))
+    app.add_handler(CommandHandler("klaviyo_check", cmd_klaviyo_check))
     # qualsiasi testo non-comando -> assistente AI
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     return app
