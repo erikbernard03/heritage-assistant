@@ -1,0 +1,166 @@
+"""
+Connettore Klaviyo — SOLA LETTURA (Fase 4).
+
+IMPORTANTE: SOLO dati a livello CAMPAGNA. I FLOWS sono esclusi per scelta — questo
+modulo usa esclusivamente l'endpoint "campaign-values-report" (i flow hanno un
+endpoint separato che NON viene mai chiamato).
+
+REGOLE (coerenti col progetto):
+- Private API key in sola lettura (pk_...), passata come header Authorization.
+- UNA sola chiamata Reporting al giorno (il report notturno); la cache su DB
+  (src/report.py) evita chiamate ripetute dai /report manuali.
+- Gestione rate limit Klaviyo (429 con Retry-After) e 5xx con backoff.
+- Il sistema NON modifica mai nulla su Klaviyo: solo letture (GET) e una query di
+  reporting (POST a un endpoint di sola lettura, nessuna mutazione).
+
+Nessun LLM tocca questi numeri.
+"""
+from __future__ import annotations
+
+import time
+from typing import Optional
+
+import requests
+
+from config import settings
+
+# Statistiche richieste al Reporting API (nomi validi per le campagne).
+CAMPAIGN_STATISTICS = [
+    "conversion_value",  # revenue attribuito (USD)
+    "opens",
+    "clicks",
+    "conversions",
+    "recipients",
+    "open_rate",
+    "click_rate",
+]
+
+
+class KlaviyoError(RuntimeError):
+    """Errore generico del connettore Klaviyo."""
+
+
+class KlaviyoConnector:
+    BASE = "https://a.klaviyo.com/api"
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        revision: Optional[str] = None,
+        timeout: int = 60,
+    ):
+        self.api_key = api_key or settings.KLAVIYO_API_KEY
+        self.revision = revision or settings.KLAVIYO_API_REVISION
+        self.timeout = timeout
+        if not self.api_key:
+            raise KlaviyoError("KLAVIYO_API_KEY non configurata (.env).")
+        self._session = requests.Session()
+
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Klaviyo-API-Key {self.api_key}",
+            "revision": self.revision,
+            "accept": "application/json",
+            "content-type": "application/json",
+        }
+
+    # --------------------------------------------------------------- requests
+    def _request(self, method: str, path: str, json_body: Optional[dict] = None) -> dict:
+        """Richiesta con gestione rate-limit (429 + Retry-After) e backoff su 5xx."""
+        url = path if path.startswith("http") else f"{self.BASE}{path}"
+        max_retries = 5
+        for attempt in range(max_retries):
+            resp = self._session.request(
+                method, url, headers=self._headers(), json=json_body, timeout=self.timeout
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            if resp.status_code == 429:
+                retry_after = float(resp.headers.get("Retry-After", 2 ** attempt * 3))
+                time.sleep(min(retry_after, 120))
+                continue
+            if resp.status_code in (500, 502, 503, 504):
+                time.sleep(min(2 ** attempt * 3, 120))
+                continue
+            raise KlaviyoError(f"{method} {url} -> {resp.status_code}: {resp.text[:500]}")
+        raise KlaviyoError(f"{method} {url}: esauriti i retry (rate limit?).")
+
+    # ------------------------------------------------------------------- API
+    def resolve_conversion_metric_id(self) -> str:
+        """
+        ID della metrica di conversione ("Placed Order"). Usa quello configurato
+        in env se presente, altrimenti lo risolve dalla lista metriche.
+        """
+        if settings.KLAVIYO_CONVERSION_METRIC_ID:
+            return settings.KLAVIYO_CONVERSION_METRIC_ID
+
+        data = self._request("GET", "/metrics/")
+        metrics = data.get("data", [])
+        # preferenza: "Placed Order" (integrazione Shopify); fallback al primo utile
+        for name in ("Placed Order", "Ordered Product"):
+            for m in metrics:
+                if (m.get("attributes") or {}).get("name") == name:
+                    return m["id"]
+        if metrics:
+            return metrics[0]["id"]
+        raise KlaviyoError("Nessuna metrica di conversione trovata su Klaviyo.")
+
+    def get_daily_campaign_report(
+        self, start_iso: str, end_iso: str, conversion_metric_id: str
+    ) -> list[dict]:
+        """
+        UNICA query di reporting del giorno: valori per CAMPAGNA nell'intervallo
+        [start_iso, end_iso). Endpoint campaign-values-report (NO flows).
+
+        Ritorna la lista grezza dei risultati: ogni elemento ha groupings (campaign_id)
+        e statistics (conversion_value, opens, clicks, ...). I calcoli/aggregazioni
+        avvengono in src/metrics/klaviyo.py, deterministicamente.
+        """
+        body = {
+            "data": {
+                "type": "campaign-values-report",
+                "attributes": {
+                    "statistics": CAMPAIGN_STATISTICS,
+                    "timeframe": {"start": start_iso, "end": end_iso},
+                    "conversion_metric_id": conversion_metric_id,
+                },
+            }
+        }
+        data = self._request("POST", "/campaign-values-reports/", json_body=body)
+        return ((data.get("data") or {}).get("attributes") or {}).get("results", []) or []
+
+    def get_campaign_names(self, campaign_ids: list[str]) -> dict[str, str]:
+        """
+        Mappa campaign_id -> nome (best-effort). I report restituiscono solo gli id;
+        i nomi rendono leggibili report e risposte AI. Se la chiamata fallisce, si
+        prosegue senza nomi (non blocca il report).
+        """
+        names: dict[str, str] = {}
+        if not campaign_ids:
+            return names
+        # filtro per email; i campaign-values-report sono tipicamente email
+        params = (
+            "?filter=equals(messages.channel,'email')"
+            "&fields[campaign]=name&page[size]=100"
+        )
+        try:
+            data = self._request("GET", f"/campaigns/{params}")
+            wanted = set(campaign_ids)
+            for c in data.get("data", []):
+                cid = c.get("id")
+                if cid in wanted:
+                    names[cid] = (c.get("attributes") or {}).get("name") or ""
+            # pagine successive (best-effort, limitate)
+            next_url = ((data.get("links") or {}).get("next"))
+            pages = 0
+            while next_url and pages < 5 and len(names) < len(wanted):
+                data = self._request("GET", next_url)
+                for c in data.get("data", []):
+                    cid = c.get("id")
+                    if cid in wanted:
+                        names[cid] = (c.get("attributes") or {}).get("name") or ""
+                next_url = ((data.get("links") or {}).get("next"))
+                pages += 1
+        except Exception as exc:  # noqa: BLE001 — i nomi sono opzionali
+            print(f"[klaviyo] risoluzione nomi campagne saltata: {exc}")
+        return names

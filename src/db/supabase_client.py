@@ -176,6 +176,64 @@ class SupabaseStore:
         )
         return res.data or []
 
+    # -------------------------------------------------------- Klaviyo (Fase 4)
+    def upsert_klaviyo_daily(self, kla) -> None:
+        """Upsert dei totali Klaviyo (campagne) giornalieri (chiave = day)."""
+        self.client.table("klaviyo_daily").upsert(kla.as_db_row()).execute()
+
+    def upsert_klaviyo_campaigns(self, kla) -> int:
+        """Upsert del breakdown per campagna (chiave = day+campaign_id)."""
+        rows = [c.as_db_row() for c in kla.campaigns if c.campaign_id]
+        if not rows:
+            return 0
+        self.client.table("klaviyo_campaigns").upsert(rows).execute()
+        return len(rows)
+
+    def get_klaviyo_daily_for_day(self, day: str) -> Optional[dict]:
+        """Totali Klaviyo per un giorno, se presenti (cache 1-call/giorno)."""
+        res = (
+            self.client.table("klaviyo_daily")
+            .select("*")
+            .eq("day", day)
+            .limit(1)
+            .execute()
+        )
+        return (res.data or [None])[0]
+
+    def get_klaviyo_campaigns_for_day(self, day: str) -> list[dict]:
+        """Breakdown campagne Klaviyo per un giorno (ordinate per revenue desc)."""
+        res = (
+            self.client.table("klaviyo_campaigns")
+            .select("*")
+            .eq("day", day)
+            .order("revenue", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def get_recent_klaviyo_daily(self, days: int = 14) -> list[dict]:
+        """Ultime N righe di klaviyo_daily (più recenti prima)."""
+        res = (
+            self.client.table("klaviyo_daily")
+            .select("*")
+            .order("day", desc=True)
+            .limit(days)
+            .execute()
+        )
+        return res.data or []
+
+    def get_recent_klaviyo_campaigns(self, days: int = 7, limit: int = 60) -> list[dict]:
+        """Campagne Klaviyo recenti (per dare contesto all'assistente AI)."""
+        res = (
+            self.client.table("klaviyo_campaigns")
+            .select("*")
+            .order("day", desc=True)
+            .order("revenue", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
 
 def _num(value) -> float:
     try:

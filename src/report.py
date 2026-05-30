@@ -63,6 +63,12 @@ def build_daily_report(
         window.day_str, persist=persist, force=force_meta
     )
 
+    # Klaviyo (Fase 4): una sola pull reporting/giorno (cache su DB); SOLO campagne.
+    # È revenue attribuita (informativa): NON entra nel net profit.
+    klaviyo_daily, klaviyo_campaigns = _load_klaviyo(
+        window.day_str, window.start.isoformat(), window.end.isoformat(), persist=persist
+    )
+
     metrics = compute_daily_metrics(
         day=window.day_str,
         orders=orders,
@@ -73,7 +79,9 @@ def build_daily_report(
     if persist:
         _persist(orders, handle_map, metrics)
 
-    return metrics, format_report(metrics, meta_daily, meta_campaigns)
+    return metrics, format_report(
+        metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns
+    )
 
 
 def _load_meta(day: str, persist: bool, force: bool = False):
@@ -125,6 +133,57 @@ def _load_meta(day: str, persist: bool, force: bool = False):
         return None, [], 0.0
 
 
+def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool, force: bool = False):
+    """
+    Restituisce (klaviyo_daily_dict | None, klaviyo_campaigns: list[dict]).
+
+    SOLO CAMPAGNE (no flows). Stessa regola di Meta: UNA pull reporting al giorno,
+    con cache su DB. Se Klaviyo non è configurato o fallisce, il report prosegue
+    comunque senza la sezione Klaviyo.
+    """
+    if not settings.KLAVIYO_API_KEY:
+        return None, []
+
+    store = None
+    try:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] Supabase non disponibile per Klaviyo: {exc}")
+
+    # 1) cache su DB (evita una nuova chiamata API)
+    if store is not None and not force:
+        cached = store.get_klaviyo_daily_for_day(day)
+        if cached:
+            return cached, store.get_klaviyo_campaigns_for_day(day)
+
+    # 2) nessuna cache: UNA pull reporting (campaign-values-report)
+    try:
+        from src.connectors.klaviyo import KlaviyoConnector
+        from src.metrics.klaviyo import compute_klaviyo_metrics
+
+        kc = KlaviyoConnector()
+        metric_id = kc.resolve_conversion_metric_id()
+        raw = kc.get_daily_campaign_report(start_iso, end_iso, metric_id)
+        ids = [
+            str((r.get("groupings") or {}).get("campaign_id") or "")
+            for r in raw
+            if (r.get("groupings") or {}).get("campaign_id")
+        ]
+        names = kc.get_campaign_names(ids)
+        computed = compute_klaviyo_metrics(day, raw, names=names)
+
+        if persist and store is not None:
+            store.upsert_klaviyo_daily(computed)
+            store.upsert_klaviyo_campaigns(computed)
+
+        return computed.as_db_row(), [c.as_db_row() for c in computed.campaigns]
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] pull Klaviyo saltata: {exc}")
+        return None, []
+
+
 def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics) -> None:
     """Salva su Supabase se configurato; non blocca il report in caso di assenza DB."""
     try:
@@ -142,6 +201,8 @@ def format_report(
     m: DailyMetrics,
     meta_daily: Optional[dict] = None,
     meta_campaigns: Optional[list[dict]] = None,
+    klaviyo_daily: Optional[dict] = None,
+    klaviyo_campaigns: Optional[list[dict]] = None,
 ) -> str:
     """Formatta il report Telegram (Markdown). Tutti i valori in USD."""
     fixed_line = ""
@@ -169,6 +230,7 @@ def format_report(
         f"   • Net (incl. fixed costs): *${m.net_profit_netto:,.2f}*\n"
     )
     report += _format_meta_section(meta_daily, meta_campaigns)
+    report += _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
     return report
 
 
@@ -207,6 +269,45 @@ def _format_meta_section(
             out += (
                 f"• *{name}* — spend ${c_spend:,.0f} · "
                 f"rev ${c_rev:,.0f} · ord {c_ord} · CVR {c_cvr:.1f}%\n"
+            )
+    return out
+
+
+def _format_klaviyo_section(
+    klaviyo_daily: Optional[dict], klaviyo_campaigns: Optional[list[dict]]
+) -> str:
+    """Sezione Klaviyo: revenue campagne + breakdown (USD). SOLO campagne, no flows."""
+    if not klaviyo_daily:
+        if settings.KLAVIYO_API_KEY:
+            return "\n✉️ *Klaviyo (campaigns)*: data not available for this day.\n"
+        return ""  # Klaviyo non configurato: nessuna sezione
+
+    revenue = float(klaviyo_daily.get("revenue") or 0)
+    opens = int(klaviyo_daily.get("opens") or 0)
+    clicks = int(klaviyo_daily.get("clicks") or 0)
+    conversions = int(klaviyo_daily.get("conversions") or 0)
+    open_rate = float(klaviyo_daily.get("open_rate") or 0) * 100
+    click_rate = float(klaviyo_daily.get("click_rate") or 0) * 100
+
+    out = (
+        f"\n✉️ *Klaviyo campaigns — {klaviyo_daily.get('day')}* _(USD, campaigns only)_\n"
+        f"   • Attributed revenue: *${revenue:,.2f}*\n"
+        f"   • Opens: {opens:,} ({open_rate:.1f}%) · Clicks: {clicks:,} ({click_rate:.1f}%)\n"
+        f"   • Conversions: {conversions:,}\n"
+    )
+
+    campaigns = klaviyo_campaigns or []
+    if campaigns:
+        out += "\n*Campaign breakdown* (top by revenue):\n"
+        for c in campaigns[:8]:
+            name = (c.get("campaign_name") or "(no name)")[:34]
+            c_rev = float(c.get("revenue") or 0)
+            c_open = int(c.get("opens") or 0)
+            c_click = int(c.get("clicks") or 0)
+            c_conv = int(c.get("conversions") or 0)
+            out += (
+                f"• *{name}* — rev ${c_rev:,.0f} · "
+                f"opens {c_open:,} · clicks {c_click:,} · conv {c_conv}\n"
             )
     return out
 

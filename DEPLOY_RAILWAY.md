@@ -71,6 +71,9 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 | `META_ACCESS_TOKEN` | ✅ | ✅ | System User token (Business Manager, read-only) |
 | `META_AD_ACCOUNT_ID` | ✅ | ✅ | ID account pubblicitario (es. `act_123…` o `123…`) |
 | `META_API_VERSION` | ✅ | ✅ | `v21.0` (opzionale, è il default) |
+| `KLAVIYO_API_KEY` | ✅ | ✅ | Private API key `pk_…` (read-only) |
+| `KLAVIYO_API_REVISION` | ✅ | ✅ | `2024-10-15` (opzionale, è il default) |
+| `KLAVIYO_CONVERSION_METRIC_ID` | ⬜️ | ⬜️ | (opzionale) ID metrica "Placed Order"; se vuoto è risolto a runtime |
 | `TIMEZONE` | ✅ | ✅ | `Europe/Rome` |
 | `RAILWAY_CRON_GUARD` | ⬜️ | ✅ | `1` — **solo sul cron** |
 
@@ -78,6 +81,11 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 > SQL Editor di Supabase (crea le tabelle `meta_daily` e `meta_campaigns`). Le variabili
 > `META_*` vanno su **entrambi** i servizi: il `cron` fa la pull insights notturna,
 > il `bot` la riusa dalla cache DB (1 sola chiamata Meta al giorno).
+
+> **Klaviyo (Fase 4):** esegui anche `supabase/migrations/003_klaviyo.sql` (tabelle
+> `klaviyo_daily` e `klaviyo_campaigns`). SOLO dati a livello CAMPAGNA (no flows).
+> `KLAVIYO_*` su **entrambi** i servizi: il `cron` fa la pull reporting notturna,
+> il `bot` la riusa dalla cache DB (1 sola chiamata Klaviyo al giorno).
 
 > 🔒 Non committare mai questi valori: vivono solo nelle Variables di Railway (e nel tuo `.env` locale).
 

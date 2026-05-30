@@ -37,6 +37,13 @@ META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN", "")
 META_AD_ACCOUNT_ID = os.getenv("META_AD_ACCOUNT_ID", "")
 META_API_VERSION = os.getenv("META_API_VERSION", "v21.0")
 
+# ---- Klaviyo (Fase 4, SOLA LETTURA: solo CAMPAGNE, NO flows) ----
+# Private API key (pk_...). Una sola chiamata Reporting API al giorno, cache su DB.
+KLAVIYO_API_KEY = os.getenv("KLAVIYO_API_KEY", "")
+KLAVIYO_API_REVISION = os.getenv("KLAVIYO_API_REVISION", "2024-10-15")
+# Metrica di conversione (di solito "Placed Order"). Se vuoto, viene risolta a runtime.
+KLAVIYO_CONVERSION_METRIC_ID = os.getenv("KLAVIYO_CONVERSION_METRIC_ID", "")
+
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
 # ---------------------------------------------------------------------------
