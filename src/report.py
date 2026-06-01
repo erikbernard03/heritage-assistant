@@ -63,6 +63,12 @@ def build_daily_report(
         window.day_str, persist=persist, force=force_meta
     )
 
+    # TikTok via Triple Whale (Fase 3): una sola pull Summary/giorno (cache su DB);
+    # SOLO TikTok. La spesa è un costo reale e va sottratta dal net profit (come Meta).
+    tiktok_daily, tiktok_campaigns, tiktok_spend = _load_tiktok(
+        window.day_str, window.start.date().isoformat(), window.day_str, persist=persist
+    )
+
     # Klaviyo (Fase 4): una sola pull reporting/giorno (cache su DB); SOLO campagne.
     # È revenue attribuita (informativa): NON entra nel net profit.
     klaviyo_daily, klaviyo_campaigns = _load_klaviyo(
@@ -73,14 +79,16 @@ def build_daily_report(
         day=window.day_str,
         orders=orders,
         handle_map=handle_map,
-        ads_spend=meta_spend,  # Fase 2: spesa Meta (USD) sottratta dal net profit
+        # Fase 2+3: spesa ads totale (Meta + TikTok, USD) sottratta dal net profit
+        ads_spend=meta_spend + tiktok_spend,
     )
 
     if persist:
         _persist(orders, handle_map, metrics)
 
     return metrics, format_report(
-        metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns
+        metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
+        tiktok_daily, tiktok_campaigns,
     )
 
 
@@ -130,6 +138,59 @@ def _load_meta(day: str, persist: bool, force: bool = False):
         return daily_dict, campaign_dicts, computed.spend
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
         print(f"[report] pull Meta saltata: {exc}")
+        return None, [], 0.0
+
+
+def _load_tiktok(day: str, start: str, end: str, persist: bool, force: bool = False):
+    """
+    Restituisce (tiktok_daily_dict | None, tiktok_campaigns: list[dict], tiktok_spend_usd).
+
+    Stessa regola di Meta/Klaviyo: UNA pull Summary al giorno, con cache su DB. Estrae
+    SOLO TikTok. Se Triple Whale non è configurato o fallisce, il report prosegue
+    comunque (tiktok_spend = 0). `start`/`end` sono date YYYY-MM-DD.
+    """
+    if not settings.TRIPLEWHALE_API_KEY:
+        return None, [], 0.0
+
+    store = None
+    try:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] Supabase non disponibile per TikTok: {exc}")
+
+    # 1) cache su DB (evita una nuova chiamata API)
+    if store is not None and not force:
+        cached = store.get_tiktok_daily_for_day(day)
+        if cached:
+            campaigns = store.get_tiktok_campaigns_for_day(day)
+            return cached, campaigns, float(cached.get("spend") or 0.0)
+
+    # 2) nessuna cache: UNA pull Summary + estrazione SOLO TikTok
+    try:
+        from src.connectors.triplewhale import TripleWhaleConnector, extract_tiktok
+        from src.metrics.tiktok import compute_tiktok_metrics
+
+        tw = TripleWhaleConnector()
+        summary = tw.get_summary(start, end)
+        tiktok = extract_tiktok(summary)
+        if not tiktok:
+            print("[report] nessun canale TikTok trovato nel Summary di Triple Whale.")
+            return None, [], 0.0
+
+        computed = compute_tiktok_metrics(day, tiktok)
+        if persist and store is not None:
+            store.upsert_tiktok_daily(computed)
+            store.upsert_tiktok_campaigns(computed)
+
+        return (
+            computed.as_db_row(),
+            [c.as_db_row() for c in computed.campaigns],
+            computed.spend,
+        )
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] pull TikTok (Triple Whale) saltata: {exc}")
         return None, [], 0.0
 
 
@@ -203,6 +264,8 @@ def format_report(
     meta_campaigns: Optional[list[dict]] = None,
     klaviyo_daily: Optional[dict] = None,
     klaviyo_campaigns: Optional[list[dict]] = None,
+    tiktok_daily: Optional[dict] = None,
+    tiktok_campaigns: Optional[list[dict]] = None,
 ) -> str:
     """Formatta il report Telegram (Markdown). Tutti i valori in USD."""
     fixed_line = ""
@@ -211,7 +274,7 @@ def format_report(
 
     ads_line = ""
     if m.ads_spend > 0:
-        ads_line = f"   • Ad spend (Meta): −${m.ads_spend:,.2f}\n"
+        ads_line = f"   • Ad spend (Meta + TikTok): −${m.ads_spend:,.2f}\n"
 
     report = (
         f"📊 *Daily report — {m.day}*\n"
@@ -230,8 +293,48 @@ def format_report(
         f"   • Net (incl. fixed costs): *${m.net_profit_netto:,.2f}*\n"
     )
     report += _format_meta_section(meta_daily, meta_campaigns)
+    report += _format_tiktok_section(tiktok_daily, tiktok_campaigns)
     report += _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
     return report
+
+
+def _format_tiktok_section(
+    tiktok_daily: Optional[dict], tiktok_campaigns: Optional[list[dict]]
+) -> str:
+    """Sezione TikTok: totali + breakdown per campagna (USD)."""
+    if not tiktok_daily:
+        if settings.TRIPLEWHALE_API_KEY:
+            return "\n🎵 *TikTok Ads*: data not available for this day.\n"
+        return ""  # Triple Whale non configurato: nessuna sezione
+
+    spend = float(tiktok_daily.get("spend") or 0)
+    revenue = float(tiktok_daily.get("revenue") or 0)
+    orders = int(tiktok_daily.get("orders") or 0)
+    roas = float(tiktok_daily.get("roas") or 0)
+    cpa = float(tiktok_daily.get("cpa") or 0)
+
+    out = (
+        f"\n🎵 *TikTok Ads — {tiktok_daily.get('day')}* _(USD, via Triple Whale)_\n"
+        f"   • Spend: *${spend:,.2f}*\n"
+        f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
+        f"   • CPA: ${cpa:,.2f}\n"
+        f"   • Attributed revenue: ${revenue:,.2f} · conversions: {orders}\n"
+    )
+
+    campaigns = tiktok_campaigns or []
+    if campaigns:
+        out += "\n*Campaign breakdown* (top by spend):\n"
+        for c in campaigns[:8]:
+            name = (c.get("campaign_name") or "(no name)")[:34]
+            c_spend = float(c.get("spend") or 0)
+            c_rev = float(c.get("revenue") or 0)
+            c_ord = int(c.get("orders") or 0)
+            c_cvr = float(c.get("cvr") or 0) * 100
+            out += (
+                f"• *{name}* — spend ${c_spend:,.0f} · "
+                f"rev ${c_rev:,.0f} · ord {c_ord} · CVR {c_cvr:.1f}%\n"
+            )
+    return out
 
 
 def _format_meta_section(

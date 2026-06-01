@@ -190,3 +190,66 @@ def meta_diagnostic() -> str:
         out.append(f"❌ insights call FAILED: {exc}")
 
     return _scrub("\n".join(out), settings.META_ACCESS_TOKEN)
+
+
+def triplewhale_diagnostic() -> str:
+    """
+    Diagnostica LIVE Triple Whale (sola lettura, SOLO TikTok): chiama il Summary per
+    ieri e per gli ultimi 7 giorni, mostra esito/errore, struttura della risposta,
+    e le metriche TikTok estratte (spend/ROAS/impr/clicks/conv + campagne).
+    La API key non è MAI esposta (mascherata + rimossa dall'output).
+    """
+    out: list[str] = []
+    out.append("🔎 Triple Whale diagnostic (read-only, TikTok only)")
+    out.append(
+        f"Key: {_mask(settings.TRIPLEWHALE_API_KEY)} · base: {settings.TRIPLEWHALE_API_BASE} · "
+        f"path: {settings.TRIPLEWHALE_SUMMARY_PATH}"
+    )
+
+    if not settings.TRIPLEWHALE_API_KEY:
+        out.append("\n❌ TRIPLEWHALE_API_KEY not set in this environment.")
+        return "\n".join(out)
+
+    from src.connectors.triplewhale import TripleWhaleConnector, extract_tiktok, find_tiktok_node
+    from src.metrics.tiktok import compute_tiktok_metrics
+
+    tw = TripleWhaleConnector()
+    tz = pytz.timezone(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    since7 = (today - timedelta(days=7)).isoformat()
+
+    for label, start, end in (
+        ("yesterday", yesterday, yesterday),
+        ("last 7 days", since7, (today - timedelta(days=1)).isoformat()),
+    ):
+        out.append(f"\n— Summary {label} ({start} → {end}) —")
+        try:
+            summary = tw.get_summary(start, end)
+            out.append("✅ API call OK.")
+            if isinstance(summary, dict):
+                out.append("Top-level keys: " + ", ".join(list(summary.keys())[:15]))
+            node = find_tiktok_node(summary)
+            if node is None:
+                out.append("⚠️ No TikTok channel found in the Summary response.")
+                continue
+            if isinstance(node, dict):
+                out.append("TikTok node keys: " + ", ".join(list(node.keys())[:20]))
+            tiktok = extract_tiktok(summary)
+            computed = compute_tiktok_metrics(label, tiktok)
+            out.append(
+                f"TikTok (USD, currency={computed.account_currency}, fx={computed.fx_to_usd:.4f}): "
+                f"spend ${computed.spend:,.2f} · ROAS {computed.roas:,.2f}x · "
+                f"impr {computed.impressions:,} · clicks {computed.clicks:,} · "
+                f"conv {computed.orders:,} · rev ${computed.revenue:,.2f}"
+            )
+            if computed.campaigns:
+                out.append("Per-campaign spend (top 8):")
+                for c in computed.campaigns[:8]:
+                    out.append(f"  • {c.campaign_name[:34]} — ${c.spend:,.2f}  id={c.campaign_id}")
+            else:
+                out.append("(no per-campaign breakdown in this response)")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"❌ call FAILED: {exc}")
+
+    return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)

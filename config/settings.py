@@ -44,6 +44,15 @@ KLAVIYO_API_REVISION = os.getenv("KLAVIYO_API_REVISION", "2024-10-15")
 # Metrica di conversione (di solito "Placed Order"). Se vuoto, viene risolta a runtime.
 KLAVIYO_CONVERSION_METRIC_ID = os.getenv("KLAVIYO_CONVERSION_METRIC_ID", "")
 
+# ---- Triple Whale (Fase 3, SOLA LETTURA: SOLO TikTok) ----
+# API key con scope "Summary Page: Read" + "Pixel Attribution: Read".
+# Una sola chiamata Summary al giorno, cache su DB. Estrae SOLO il canale TikTok.
+TRIPLEWHALE_API_KEY = os.getenv("TRIPLEWHALE_API_KEY", "")
+TRIPLEWHALE_API_BASE = os.getenv("TRIPLEWHALE_API_BASE", "https://api.triplewhale.com/api/v2")
+TRIPLEWHALE_SUMMARY_PATH = os.getenv("TRIPLEWHALE_SUMMARY_PATH", "/summary-page/get-data")
+# Opzionale: dominio/ID dello shop, se l'endpoint Summary lo richiede.
+TRIPLEWHALE_SHOP_ID = os.getenv("TRIPLEWHALE_SHOP_ID", "")
+
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
 # ---------------------------------------------------------------------------

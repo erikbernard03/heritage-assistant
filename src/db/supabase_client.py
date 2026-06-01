@@ -234,6 +234,64 @@ class SupabaseStore:
         )
         return res.data or []
 
+    # --------------------------------------------------------- TikTok (Fase 3)
+    def upsert_tiktok_daily(self, tt) -> None:
+        """Upsert dei totali TikTok giornalieri (chiave = day)."""
+        self.client.table("tiktok_daily").upsert(tt.as_db_row()).execute()
+
+    def upsert_tiktok_campaigns(self, tt) -> int:
+        """Upsert del breakdown per campagna (chiave = day+campaign_id)."""
+        rows = [c.as_db_row() for c in tt.campaigns if c.campaign_id]
+        if not rows:
+            return 0
+        self.client.table("tiktok_campaigns").upsert(rows).execute()
+        return len(rows)
+
+    def get_tiktok_daily_for_day(self, day: str) -> Optional[dict]:
+        """Totali TikTok per un giorno, se presenti (cache 1-call/giorno)."""
+        res = (
+            self.client.table("tiktok_daily")
+            .select("*")
+            .eq("day", day)
+            .limit(1)
+            .execute()
+        )
+        return (res.data or [None])[0]
+
+    def get_tiktok_campaigns_for_day(self, day: str) -> list[dict]:
+        """Breakdown campagne TikTok per un giorno (ordinate per spesa decrescente)."""
+        res = (
+            self.client.table("tiktok_campaigns")
+            .select("*")
+            .eq("day", day)
+            .order("spend", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def get_recent_tiktok_daily(self, days: int = 14) -> list[dict]:
+        """Ultime N righe di tiktok_daily (più recenti prima)."""
+        res = (
+            self.client.table("tiktok_daily")
+            .select("*")
+            .order("day", desc=True)
+            .limit(days)
+            .execute()
+        )
+        return res.data or []
+
+    def get_recent_tiktok_campaigns(self, days: int = 7, limit: int = 60) -> list[dict]:
+        """Campagne TikTok recenti (per dare contesto all'assistente AI)."""
+        res = (
+            self.client.table("tiktok_campaigns")
+            .select("*")
+            .order("day", desc=True)
+            .order("spend", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
 
 def _num(value) -> float:
     try:

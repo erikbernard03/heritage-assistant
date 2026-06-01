@@ -74,6 +74,8 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 | `KLAVIYO_API_KEY` | ✅ | ✅ | Private API key `pk_…` (read-only) |
 | `KLAVIYO_API_REVISION` | ✅ | ✅ | `2024-10-15` (opzionale, è il default) |
 | `KLAVIYO_CONVERSION_METRIC_ID` | ⬜️ | ⬜️ | (opzionale) ID metrica "Placed Order"; se vuoto è risolto a runtime |
+| `TRIPLEWHALE_API_KEY` | ✅ | ✅ | API key (scope Summary Page: Read + Pixel Attribution: Read) — solo TikTok |
+| `TRIPLEWHALE_SHOP_ID` | ⬜️ | ⬜️ | (opzionale) dominio shop se l'endpoint Summary lo richiede |
 | `TIMEZONE` | ✅ | ✅ | `Europe/Rome` |
 | `RAILWAY_CRON_GUARD` | ⬜️ | ✅ | `1` — **solo sul cron** |
 
@@ -86,6 +88,12 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 > `klaviyo_daily` e `klaviyo_campaigns`). SOLO dati a livello CAMPAGNA (no flows).
 > `KLAVIYO_*` su **entrambi** i servizi: il `cron` fa la pull reporting notturna,
 > il `bot` la riusa dalla cache DB (1 sola chiamata Klaviyo al giorno).
+
+> **TikTok via Triple Whale (Fase 3):** esegui anche `supabase/migrations/004_tiktok.sql`
+> (tabelle `tiktok_daily` e `tiktok_campaigns`). Estrae SOLO il canale TikTok dal Summary.
+> `TRIPLEWHALE_*` su **entrambi** i servizi: il `cron` fa la pull notturna, il `bot` la
+> riusa dalla cache DB (1 sola chiamata Triple Whale al giorno). La spesa TikTok viene
+> sottratta dal net profit (come Meta). Diagnostica: comando `/tw_check`.
 
 > 🔒 Non committare mai questi valori: vivono solo nelle Variables di Railway (e nel tuo `.env` locale).
 
