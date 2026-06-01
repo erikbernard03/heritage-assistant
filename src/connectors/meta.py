@@ -98,18 +98,19 @@ class MetaConnector:
         data = self._get(self.ad_account_id, {"fields": "currency"})
         return (data.get("currency") or "USD").upper()
 
-    def get_daily_campaign_insights(self, day: str) -> list[dict]:
+    def get_campaign_insights(
+        self, since: str, until: str, time_increment: Optional[int] = 1
+    ) -> list[dict]:
         """
-        UNICA pull insights del giorno: una riga per campagna per il giorno `day`
-        (YYYY-MM-DD). Ritorna i record grezzi Meta (la conversione valuta e i calcoli
-        avvengono in src/metrics/meta.py, deterministicamente).
+        Pull insights per CAMPAGNA nell'intervallo [since, until] (YYYY-MM-DD).
 
-        La paginazione fa parte della singola pull giornaliera (non è polling).
+        time_increment=1 -> una riga per campagna PER GIORNO (ogni riga ha date_start).
+        time_increment=None -> aggregato per campagna sull'intero intervallo.
+        Ritorna i record grezzi Meta; conversione/calcoli avvengono altrove.
         """
         params = {
             "level": "campaign",
-            "time_range": json.dumps({"since": day, "until": day}),
-            "time_increment": 1,
+            "time_range": json.dumps({"since": since, "until": until}),
             "fields": ",".join(
                 [
                     "campaign_id",
@@ -123,6 +124,9 @@ class MetaConnector:
             ),
             "limit": 500,
         }
+        if time_increment:
+            params["time_increment"] = time_increment
+
         rows: list[dict] = []
         data = self._get(f"{self.ad_account_id}/insights", params)
         while True:
@@ -132,3 +136,11 @@ class MetaConnector:
                 break
             data = self._get(next_url, {})
         return rows
+
+    def get_daily_campaign_insights(self, day: str) -> list[dict]:
+        """
+        UNICA pull insights del giorno: una riga per campagna per il giorno `day`
+        (YYYY-MM-DD). Ritorna i record grezzi Meta (la conversione valuta e i calcoli
+        avvengono in src/metrics/meta.py, deterministicamente).
+        """
+        return self.get_campaign_insights(day, day, time_increment=1)

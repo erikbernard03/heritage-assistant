@@ -107,3 +107,86 @@ def klaviyo_diagnostic() -> str:
             out.append(f"  pull failed: {exc}")
 
     return "\n".join(out)
+
+
+def _scrub(text: str, secret: str) -> str:
+    """Rimuove eventuali occorrenze del segreto dall'output (difesa in profondità)."""
+    return text.replace(secret, "***") if secret else text
+
+
+def meta_diagnostic() -> str:
+    """
+    Diagnostica LIVE Meta (sola lettura): currency + insights di ieri e degli ultimi
+    7 giorni (totali per giorno + spesa per campagna). L'access token non è MAI esposto
+    (mascherato e, per sicurezza, rimosso dall'output).
+    """
+    out: list[str] = []
+    out.append("🔎 Meta diagnostic (read-only)")
+    out.append(
+        f"Token: {_mask(settings.META_ACCESS_TOKEN)} · account: "
+        f"{settings.META_AD_ACCOUNT_ID or '(EMPTY)'} · api {settings.META_API_VERSION}"
+    )
+
+    if not (settings.META_ACCESS_TOKEN and settings.META_AD_ACCOUNT_ID):
+        out.append("\n❌ META_ACCESS_TOKEN / META_AD_ACCOUNT_ID not set in this environment.")
+        return "\n".join(out)
+
+    from src.connectors.meta import MetaConnector
+    from src.metrics.meta import fx_factor
+
+    mc = MetaConnector()
+
+    # 1) valuta account
+    currency = "USD"
+    out.append("\n— Ad account —")
+    try:
+        currency = mc.get_account_currency()
+        out.append(f"✅ currency: {currency} (fx→USD: {fx_factor(currency):.4f})")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ currency call FAILED: {exc}")
+
+    # 2) insights ultimi 7 giorni, per giorno (include 'ieri')
+    tz = pytz.timezone(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    yesterday = today - timedelta(days=1)
+    since = (today - timedelta(days=7)).isoformat()
+    until = yesterday.isoformat()
+
+    out.append(f"\n— Insights (per day) {since} → {until} —")
+    try:
+        rows = mc.get_campaign_insights(since, until, time_increment=1)
+        out.append(f"✅ API OK: {len(rows)} campaign-day rows returned.")
+        if not rows:
+            out.append("  (no rows for this window — check date/timezone, account id, or spend)")
+
+        # totali per giorno
+        by_day: dict[str, dict] = {}
+        for r in rows:
+            d = r.get("date_start") or "?"
+            agg = by_day.setdefault(d, {"spend": 0.0, "impr": 0, "clicks": 0, "camps": set()})
+            agg["spend"] += float(r.get("spend") or 0)
+            agg["impr"] += int(float(r.get("impressions") or 0))
+            agg["clicks"] += int(float(r.get("clicks") or 0))
+            if r.get("campaign_id"):
+                agg["camps"].add(r["campaign_id"])
+        for d in sorted(by_day):
+            a = by_day[d]
+            flag = " ← yesterday" if d == until else ""
+            out.append(
+                f"  {d}{flag}: spend {a['spend']:,.2f} {currency} · "
+                f"impr {a['impr']:,} · clicks {a['clicks']:,} · campaigns {len(a['camps'])}"
+            )
+
+        # spesa per campagna (totale finestra)
+        by_camp: dict[tuple, float] = {}
+        for r in rows:
+            key = (r.get("campaign_id") or "?", r.get("campaign_name") or "(no name)")
+            by_camp[key] = by_camp.get(key, 0.0) + float(r.get("spend") or 0)
+        if by_camp:
+            out.append("\nPer-campaign spend (window total, top 10):")
+            for (cid, name), sp in sorted(by_camp.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                out.append(f"  • {name[:34]} — {sp:,.2f} {currency}  id={cid}")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ insights call FAILED: {exc}")
+
+    return _scrub("\n".join(out), settings.META_ACCESS_TOKEN)
