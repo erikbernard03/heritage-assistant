@@ -21,7 +21,22 @@ class SupabaseStore:
         # import lazy: evita di richiedere il pacchetto se Supabase non si usa
         from supabase import create_client
 
-        self.client = create_client(self.url, self.key)
+        # auto_refresh_token=False evita il thread di refresh in background (NON-daemon)
+        # che terrebbe vivo il processo del cron dopo il lavoro; timeouts bounded sulle
+        # chiamate REST per non restare appesi.
+        client_kwargs = {}
+        try:
+            from supabase import ClientOptions
+
+            client_kwargs["options"] = ClientOptions(
+                auto_refresh_token=False,
+                persist_session=False,
+                postgrest_client_timeout=30,
+                storage_client_timeout=30,
+            )
+        except Exception:  # noqa: BLE001 — se ClientOptions non disponibile, fallback
+            pass
+        self.client = create_client(self.url, self.key, **client_kwargs)
 
     # ----------------------------------------------------------------- orders
     def upsert_orders(self, orders: list[dict], handle_map: dict[int, str]) -> int:

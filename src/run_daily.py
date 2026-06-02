@@ -2,11 +2,17 @@
 Job notturno (ONE-SHOT): genera il report di IERI, lo invia su Telegram, ed ESCE.
 
 Deve terminare in pochi secondi. NON avvia il bot in polling né alcun processo
-long-running: è uno script one-shot che fa il suo lavoro e fa `sys.exit(0)`.
+long-running: è uno script one-shot che fa il suo lavoro e termina.
 
-Invio Telegram via HTTP sincrono (requests): niente event loop asyncio e niente
-client async di python-telegram-bot, che lasciavano risorse aperte facendo
-"appendere" il processo (rimaneva in stato Running all'infinito su Railway).
+GARANZIE DI TERMINAZIONE (anti-hang):
+- Invio Telegram via HTTP sincrono (requests): niente event loop asyncio / client
+  async di python-telegram-bot.
+- Generazione report a prova di guasto: se un connettore fallisce/va in timeout, la
+  sua parte viene saltata (0/empty) e il report parte comunque (vedi src/report.py).
+- WATCHDOG: un thread daemon forza l'uscita (os._exit) se l'intera run supera ~3 min.
+- USCITA HARD con os._exit(): termina subito il processo senza attendere thread o
+  connection pool ancora vivi (es. il thread di refresh token di Supabase), che
+  altrimenti terrebbero il processo in stato Running per ore.
 
 Schedulazione su Railway (Cron Schedule in UTC, niente ora legale):
 
@@ -24,6 +30,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time as _time
 from datetime import datetime
 
 import pytz
@@ -33,6 +41,18 @@ from config import settings
 from src.report import build_daily_report
 
 _SEND_TIMEOUT = 30  # secondi per ogni chiamata Telegram
+# Tetto massimo per l'intera run; oltre, il watchdog forza l'uscita.
+WATCHDOG_SECONDS = int(os.getenv("RUN_DAILY_WATCHDOG_SECONDS", "180"))
+
+
+def _start_watchdog(seconds: int) -> None:
+    """Thread daemon: se la run supera `seconds`, forza l'uscita immediata."""
+    def _kill() -> None:
+        _time.sleep(seconds)
+        print(f"[run_daily] WATCHDOG: run exceeded {seconds}s — forcing exit.", flush=True)
+        os._exit(2)
+
+    threading.Thread(target=_kill, daemon=True, name="run-daily-watchdog").start()
 
 
 def _should_run_now() -> bool:
@@ -67,15 +87,36 @@ def main() -> int:
     """Esegue una volta sola e ritorna un exit code (0 = ok)."""
     if not _should_run_now():
         rome_now = datetime.now(pytz.timezone(settings.TIMEZONE)).strftime("%H:%M")
-        print(f"[run_daily] not midnight in Rome (now {rome_now}): skipping.")
+        print(f"[run_daily] not midnight in Rome (now {rome_now}): skipping.", flush=True)
         return 0
 
-    _, text = build_daily_report(persist=True)
-    _send(text)
-    print("[run_daily] report sent.")
+    # Generazione: se fallisce del tutto, invio comunque una nota di errore.
+    try:
+        _, text = build_daily_report(persist=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[run_daily] report generation FAILED: {exc}", flush=True)
+        text = f"⚠️ Daily report could not be generated: {exc}"
+
+    try:
+        _send(text)
+        print("[run_daily] report sent.", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[run_daily] send FAILED: {exc}", flush=True)
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    # sys.exit garantisce la terminazione netta del processo (niente hang).
-    sys.exit(main())
+    _start_watchdog(WATCHDOG_SECONDS)
+    code = 0
+    try:
+        code = main() or 0
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"[run_daily] fatal: {exc}", flush=True)
+        code = 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # USCITA HARD: termina subito, ignorando thread/connection pool ancora vivi.
+    os._exit(code)

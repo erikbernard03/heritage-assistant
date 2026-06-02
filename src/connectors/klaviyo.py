@@ -47,7 +47,7 @@ class KlaviyoConnector:
         self,
         api_key: Optional[str] = None,
         revision: Optional[str] = None,
-        timeout: int = 60,
+        timeout: int = 30,
     ):
         self.api_key = api_key or settings.KLAVIYO_API_KEY
         self.revision = revision or settings.KLAVIYO_API_REVISION
@@ -68,7 +68,7 @@ class KlaviyoConnector:
     def _request(self, method: str, path: str, json_body: Optional[dict] = None) -> dict:
         """Richiesta con gestione rate-limit (429 + Retry-After) e backoff su 5xx."""
         url = path if path.startswith("http") else f"{self.BASE}{path}"
-        max_retries = 5
+        max_retries = 3
         for attempt in range(max_retries):
             resp = self._session.request(
                 method, url, headers=self._headers(), json=json_body, timeout=self.timeout
@@ -77,10 +77,10 @@ class KlaviyoConnector:
                 return resp.json()
             if resp.status_code == 429:
                 retry_after = float(resp.headers.get("Retry-After", 2 ** attempt * 3))
-                time.sleep(min(retry_after, 120))
+                time.sleep(min(retry_after, 15))
                 continue
             if resp.status_code in (500, 502, 503, 504):
-                time.sleep(min(2 ** attempt * 3, 120))
+                time.sleep(min(2 ** attempt * 3, 15))
                 continue
             raise KlaviyoError(f"{method} {url} -> {resp.status_code}: {resp.text[:500]}")
         raise KlaviyoError(f"{method} {url}: esauriti i retry (rate limit?).")

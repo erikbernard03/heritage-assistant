@@ -36,7 +36,7 @@ class MetaConnector:
         access_token: Optional[str] = None,
         ad_account_id: Optional[str] = None,
         api_version: Optional[str] = None,
-        timeout: int = 60,
+        timeout: int = 30,
     ):
         self.access_token = access_token or settings.META_ACCESS_TOKEN
         self.api_version = api_version or settings.META_API_VERSION
@@ -61,7 +61,7 @@ class MetaConnector:
         """GET singolo con gestione rate-limit (header usage + codici 613/4/17) e backoff."""
         url = path if path.startswith("http") else f"{self._base}/{path}"
         params = {**params, "access_token": self.access_token}
-        max_retries = 5
+        max_retries = 3
         for attempt in range(max_retries):
             resp = self._session.get(url, params=params, timeout=self.timeout)
 
@@ -83,7 +83,7 @@ class MetaConnector:
                 pass
 
             if code in _RATE_LIMIT_CODES or resp.status_code in (429, 500, 502, 503):
-                sleep_s = min(2 ** attempt * 5, 120)  # backoff: 5,10,20,40,80...
+                sleep_s = min(2 ** attempt * 3, 15)  # backoff bounded: 3,6,12
                 time.sleep(sleep_s)
                 continue
 

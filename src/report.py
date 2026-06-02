@@ -50,9 +50,14 @@ def build_daily_report(
     """Costruisce le metriche + il testo del report per la finestra indicata (default: ieri)."""
     window = window or yesterday_window()
 
-    shop = ShopifyConnector()
-    orders = shop.get_orders(window.start, window.end)
-    handle_map = shop.get_products_handle_map()
+    # Shopify: se fallisce/va in timeout, si degrada (0 ordini) e il report parte comunque.
+    try:
+        shop = ShopifyConnector()
+        orders = shop.get_orders(window.start, window.end)
+        handle_map = shop.get_products_handle_map()
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] Shopify pull failed: {exc}")
+        orders, handle_map = [], {}
 
     # annota il giorno Europe/Rome su ogni ordine (per la persistenza)
     for o in orders:
