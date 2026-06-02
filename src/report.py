@@ -85,25 +85,22 @@ def build_daily_report(
     for o in orders:
         o["_day_rome"] = window.day_str
 
-    # Cache PER-RUN del Summary Triple Whale: TikTok e Google leggono lo stesso
-    # Summary, quindi nello stesso run si fa UNA sola chiamata. La cache vive solo
-    # per questa esecuzione (non tra run diversi), così i dati vengono sempre
-    # ri-tirati e le righe del giorno SOVRASCRITTE ad ogni run.
-    tw_cache: dict = {}
+    # UNA sola pull del Summary Triple Whale per run: lo stesso oggetto dict alimenta
+    # TikTok, Google e la CVR di negozio. Niente cache-by-key (che poteva non combaciare):
+    # passiamo direttamente il dict. Tra run diversi si ri-tira sempre (no stale).
+    tw_summary = _fetch_tw_summary(window.start.date().isoformat(), window.day_str)
 
     # Meta (Fase 2): pull insights del giorno; spesa in USD. Sempre UPSERT (overwrite).
     meta_daily, meta_campaigns, meta_spend = _load_meta(window.day_str, persist=persist)
 
     # TikTok via Triple Whale (Fase 3): SOLO TikTok. Spesa sottratta dal net profit.
     tiktok_daily, tiktok_campaigns, tiktok_spend = _load_tiktok(
-        window.day_str, window.start.date().isoformat(), window.day_str,
-        persist=persist, summary_cache=tw_cache,
+        window.day_str, tw_summary, persist=persist
     )
 
-    # Google Ads via Triple Whale (Fase 2): SOLO totali account. Spesa nel net profit.
+    # Google Ads via Triple Whale (Fase 2): SOLO totali account + CVR di negozio.
     google_daily, google_spend = _load_google(
-        window.day_str, window.start.date().isoformat(), window.day_str,
-        persist=persist, summary_cache=tw_cache,
+        window.day_str, tw_summary, persist=persist
     )
 
     # Klaviyo (Fase 4): SOLO campagne; revenue attribuita (NON entra nel net profit).
@@ -168,27 +165,30 @@ def _load_meta(day: str, persist: bool):
         return None, [], 0.0
 
 
-def _tw_summary(start: str, end: str, summary_cache: Optional[dict]) -> dict:
-    """Pull del Summary Triple Whale, deduplicata SOLO entro lo stesso run (summary_cache)."""
-    from src.connectors.triplewhale import TripleWhaleConnector
+def _fetch_tw_summary(start: str, end: str) -> Optional[dict]:
+    """
+    UNA pull del Summary Triple Whale per run. Ritorna il dict (condiviso da TikTok,
+    Google e CVR) o None se Triple Whale non è configurato / la chiamata fallisce.
+    """
+    if not settings.TRIPLEWHALE_API_KEY:
+        return None
+    try:
+        from src.connectors.triplewhale import TripleWhaleConnector
 
-    if summary_cache is not None and (start, end) in summary_cache:
-        return summary_cache[(start, end)]
-    summary = TripleWhaleConnector().get_summary(start, end)
-    if summary_cache is not None:
-        summary_cache[(start, end)] = summary
-    return summary
+        return TripleWhaleConnector().get_summary(start, end)
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] pull Summary Triple Whale fallita: {exc}")
+        return None
 
 
-def _load_tiktok(day: str, start: str, end: str, persist: bool, summary_cache=None):
+def _load_tiktok(day: str, summary: Optional[dict], persist: bool):
     """
     Restituisce (tiktok_daily_dict | None, tiktok_campaigns: list[dict], tiktok_spend_usd).
 
-    SOLO TikTok. SEMPRE upsert: la riga del giorno viene sovrascritta ad ogni run.
-    `summary_cache` deduplica la chiamata Summary con Google entro lo STESSO run.
-    Se Triple Whale non è configurato o fallisce, il report prosegue (spend=0).
+    Usa il `summary` già tirato (condiviso con Google). SOLO TikTok. SEMPRE upsert:
+    la riga del giorno viene sovrascritta ad ogni run.
     """
-    if not settings.TRIPLEWHALE_API_KEY:
+    if summary is None:
         return None, [], 0.0
 
     store = None
@@ -203,7 +203,6 @@ def _load_tiktok(day: str, start: str, end: str, persist: bool, summary_cache=No
         from src.connectors.triplewhale import extract_tiktok
         from src.metrics.tiktok import compute_tiktok_metrics
 
-        summary = _tw_summary(start, end, summary_cache)
         tiktok = extract_tiktok(summary)
         if not tiktok:
             print("[report] nessun canale TikTok trovato nel Summary di Triple Whale.")
@@ -220,19 +219,19 @@ def _load_tiktok(day: str, start: str, end: str, persist: bool, summary_cache=No
             computed.spend,
         )
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
-        print(f"[report] pull TikTok (Triple Whale) saltata: {exc}")
+        print(f"[report] elaborazione TikTok saltata: {exc}")
         return None, [], 0.0
 
 
-def _load_google(day: str, start: str, end: str, persist: bool, summary_cache=None):
+def _load_google(day: str, summary: Optional[dict], persist: bool):
     """
     Restituisce (google_daily_dict | None, google_spend_usd).
 
-    SOLO totali Google (no per-campaign). SEMPRE upsert: la riga del giorno viene
-    sovrascritta ad ogni run. `summary_cache` riusa il Summary già tirato da TikTok
-    nello STESSO run. Se Triple Whale non è configurato/fallisce, prosegue (spend=0).
+    Usa lo STESSO `summary` di TikTok (passato dal chiamante). SOLO totali Google
+    (no per-campaign) + CVR di negozio. SEMPRE upsert: la riga del giorno viene
+    sovrascritta ad ogni run.
     """
-    if not settings.TRIPLEWHALE_API_KEY:
+    if summary is None:
         return None, 0.0
 
     store = None
@@ -247,7 +246,6 @@ def _load_google(day: str, start: str, end: str, persist: bool, summary_cache=No
         from src.connectors.triplewhale import extract_google, extract_store_cvr
         from src.metrics.google import compute_google_metrics
 
-        summary = _tw_summary(start, end, summary_cache)
         google = extract_google(summary)
         cvr = extract_store_cvr(summary)
         if not google and cvr is None:
@@ -260,7 +258,7 @@ def _load_google(day: str, start: str, end: str, persist: bool, summary_cache=No
             store.upsert_google_daily(computed)
         return computed.as_db_row(), computed.spend
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
-        print(f"[report] pull Google (Triple Whale) saltata: {exc}")
+        print(f"[report] elaborazione Google saltata: {exc}")
         return None, 0.0
 
 
