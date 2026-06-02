@@ -1,52 +1,55 @@
 """
-Test deterministici delle metriche TikTok (no rete, no credenziali).
+Test deterministici dell'estrazione/calcolo TikTok (no rete, no credenziali).
 
-Verificano conversione EUR->USD, ROAS/CPA e il breakdown campagne.
+Verificano la mappatura per metricId (values.current), spend totale (tracked +
+GMV Max), revenue = spend × ROAS, e che i valori siano in USD (no conversione).
 """
-from config import settings
+from src.connectors.triplewhale import extract_tiktok
 from src.metrics.tiktok import compute_tiktok_metrics
 
 
-def test_tiktok_usd_passthrough_and_ratios():
-    tiktok = {
-        "currency": "USD",
-        "spend": 100.0,
-        "revenue": 250.0,
-        "orders": 5,
-        "clicks": 50,
-        "impressions": 1000,
-        "roas": 0,  # non riportato -> ricalcolato revenue/spend
-        "campaigns": [],
+def _summary_with_tiktok():
+    return {
+        "data": [
+            {"metricId": "facebook_spend", "values": {"current": 500}},
+            {"metricId": "tiktok_spend", "title": "TikTok Ad Spend",
+             "values": {"current": 145.94}},
+            {"metricId": "tiktokNonTrackedSpend", "values": {"current": 20.0}},
+            {"metricId": "tiktok_complete_payment_roas", "values": {"current": 2.0}},
+            {"metricId": "tiktokImpressions", "values": {"current": 10000}},
+            {"metricId": "tiktok_clicks", "values": {"current": 300}},
+            {"metricId": "averageTiktokCpm", "values": {"current": 14.6}},
+        ]
     }
-    t = compute_tiktok_metrics("2026-05-31", tiktok)
-    assert t.account_currency == "USD"
-    assert t.fx_to_usd == 1.0
-    assert t.spend == 100.0
-    assert round(t.roas, 4) == 2.5      # 250/100
-    assert round(t.cpa, 2) == 20.0      # 100/5
 
 
-def test_tiktok_eur_converted_to_usd():
-    eur_usd = settings.EUR_TO_USD
-    tiktok = {"currency": "EUR", "spend": 80.0, "revenue": 160.0, "orders": 4,
-              "clicks": 40, "impressions": 800, "campaigns": [
-                  {"campaign_id": "c1", "campaign_name": "TT Spark", "spend": 80.0,
-                   "revenue": 160.0, "orders": 4, "clicks": 40, "impressions": 800}]}
-    t = compute_tiktok_metrics("2026-05-31", tiktok)
-    assert t.account_currency == "EUR"
-    assert round(t.fx_to_usd, 6) == round(eur_usd, 6)
-    # spesa convertita in USD
-    assert round(t.spend, 2) == round(80.0 * eur_usd, 2)
-    assert round(t.revenue, 2) == round(160.0 * eur_usd, 2)
-    # ROAS invariato dalla conversione (160/80 = 2.0)
-    assert round(t.roas, 4) == 2.0
-    # campagna convertita anch'essa
-    assert t.campaigns[0].campaign_name == "TT Spark"
-    assert round(t.campaigns[0].spend, 2) == round(80.0 * eur_usd, 2)
-    assert round(t.campaigns[0].cvr, 4) == 0.1  # 4/40
+def test_extract_tiktok_from_metric_tiles():
+    tk = extract_tiktok(_summary_with_tiktok())
+    assert tk is not None
+    assert round(tk["tracked_spend"], 2) == 145.94
+    assert tk["non_tracked_spend"] == 20.0
+    assert round(tk["spend"], 2) == 165.94                 # tracked + GMV Max
+    assert tk["roas"] == 2.0
+    assert round(tk["revenue"], 2) == round(145.94 * 2.0, 2)  # spend × roas (tracked)
+    assert tk["impressions"] == 10000
+    assert tk["clicks"] == 300
+    assert tk["cpm"] == 14.6
+    assert tk["currency"] == "USD"      # già USD, nessuna conversione
+    assert tk["orders"] == 0.0          # nessuna metrica ordini -> 0
+    assert tk["campaigns"] == []        # nessun breakdown per campagna
 
 
-def test_tiktok_empty_node():
-    t = compute_tiktok_metrics("2026-05-31", {"currency": "USD"})
-    assert t.spend == 0.0
-    assert t.campaigns == []
+def test_extract_tiktok_absent_returns_none():
+    summary = {"data": [{"metricId": "facebook_spend", "values": {"current": 500}}]}
+    assert extract_tiktok(summary) is None
+
+
+def test_compute_from_extracted_tiktok():
+    tk = extract_tiktok(_summary_with_tiktok())
+    c = compute_tiktok_metrics("2026-05-31", tk)
+    assert c.account_currency == "USD"
+    assert c.fx_to_usd == 1.0
+    assert round(c.spend, 2) == 165.94    # totale, usato nel net profit
+    assert c.roas == 2.0
+    assert c.cpa == 0.0                    # orders 0 -> CPA saltato
+    assert c.campaigns == []

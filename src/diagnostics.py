@@ -211,7 +211,7 @@ def triplewhale_diagnostic() -> str:
         out.append("\n❌ TRIPLEWHALE_API_KEY not set in this environment.")
         return "\n".join(out)
 
-    from src.connectors.triplewhale import TripleWhaleConnector, extract_tiktok, find_tiktok_node
+    from src.connectors.triplewhale import TripleWhaleConnector, extract_tiktok
     from src.metrics.tiktok import compute_tiktok_metrics
 
     tw = TripleWhaleConnector()
@@ -223,67 +223,41 @@ def triplewhale_diagnostic() -> str:
         me = tw.get_me()
         snippet = json.dumps(me, ensure_ascii=False, default=str)
         out.append("✅ key valid. Response:")
-        out.append(snippet[:1200] + ("…(truncated)" if len(snippet) > 1200 else ""))
+        out.append(snippet[:900] + ("…(truncated)" if len(snippet) > 900 else ""))
     except Exception as exc:  # noqa: BLE001
         out.append(f"❌ /me call FAILED: {exc}")
 
+    # 1) metriche TikTok calcolate per ieri + ultimi 7 giorni
     tz = pytz.timezone(settings.TIMEZONE)
-    yesterday = (datetime.now(tz).date() - timedelta(days=1)).isoformat()
+    today = datetime.now(tz).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    since7 = (today - timedelta(days=7)).isoformat()
 
-    out.append(f"\n— Summary {yesterday} (RAW STRUCTURE — mapping not finalized) —")
-    try:
-        summary = tw.get_summary(yesterday, yesterday)
-    except Exception as exc:  # noqa: BLE001
-        out.append(f"❌ summary call FAILED: {exc}")
-        return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)
-
-    out.append("✅ API call OK.")
-    if isinstance(summary, dict):
-        out.append("Top-level keys: " + ", ".join(list(summary.keys())[:20]))
-
-    # raccoglie tutti i nodi-metrica (dict con 'metricId', oppure title+values)
-    nodes: list[dict] = []
-
-    def _collect(obj):
-        if isinstance(obj, dict):
-            if "metricId" in obj or ("title" in obj and "values" in obj):
-                nodes.append(obj)
-            for v in obj.values():
-                _collect(v)
-        elif isinstance(obj, list):
-            for it in obj:
-                _collect(it)
-
-    _collect(summary)
-
-    out.append(f"\nAll metric nodes ({len(nodes)}): title — metricId")
-    for n in nodes[:80]:
-        out.append(f"  • {n.get('title')!r} — metricId={n.get('metricId')!r}")
-
-    # nodi che citano TikTok (per id/title/metricId); fallback al matcher generico
-    def _is_tt(n: dict) -> bool:
-        blob = f"{n.get('id')} {n.get('title')} {n.get('metricId')}".lower()
-        return "tiktok" in blob
-
-    tt_nodes = [n for n in nodes if _is_tt(n)]
-    if not tt_nodes:
-        one = find_tiktok_node(summary)
-        if one is not None:
-            tt_nodes = [one]
-
-    out.append(f"\nTikTok-related nodes found: {len(tt_nodes)}")
-    for idx, node in enumerate(tt_nodes[:6]):
-        out.append(
-            f"\n===== TikTok node #{idx} — title={node.get('title')!r} "
-            f"metricId={node.get('metricId')!r} type={node.get('type')!r} ====="
-        )
-        out.append("keys: " + ", ".join(list(node.keys())))
-        for field in ("values", "delta", "services"):
-            blob = json.dumps(node.get(field), indent=2, ensure_ascii=False, default=str)
-            cut = blob[:2600] + ("\n…(truncated)" if len(blob) > 2600 else "")
-            out.append(f"\n--- {field} ---\n{cut}")
-        charts = json.dumps(node.get("charts"), indent=2, ensure_ascii=False, default=str)
-        cut = charts[:1800] + ("\n…(truncated)" if len(charts) > 1800 else "")
-        out.append(f"\n--- charts (sample) ---\n{cut}")
+    for label, start, end in (
+        ("yesterday", yesterday, yesterday),
+        ("last 7 days", since7, (today - timedelta(days=1)).isoformat()),
+    ):
+        out.append(f"\n— TikTok {label} ({start} → {end}) —")
+        try:
+            summary = tw.get_summary(start, end)
+            tk = extract_tiktok(summary)
+            if not tk:
+                out.append("⚠️ No TikTok metrics found in the Summary response.")
+                continue
+            c = compute_tiktok_metrics(label, tk)
+            out.append(
+                f"✅ Spend: ${c.spend:,.2f} "
+                f"(tracked ${tk['tracked_spend']:,.2f} + GMV-Max ${tk['non_tracked_spend']:,.2f})"
+            )
+            out.append(f"ROAS: {c.roas:,.2f}x · Revenue (spend×ROAS): ${c.revenue:,.2f}")
+            out.append(
+                f"Impressions: {c.impressions:,} · Clicks: {c.clicks:,} · CPM: ${tk['cpm']:,.2f}"
+            )
+            if c.orders:
+                out.append(f"Conversions: {c.orders} · CPA: ${c.cpa:,.2f}")
+            else:
+                out.append("Conversions: n/a (no TikTok purchases metric → CPA skipped)")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"❌ call FAILED: {exc}")
 
     return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)

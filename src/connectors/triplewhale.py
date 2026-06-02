@@ -28,20 +28,6 @@ import requests
 
 from config import settings
 
-# chiavi/identificatori che indicano il canale TikTok nella risposta Summary
-_TIKTOK_KEYS = ("tiktok", "tiktok-ads", "tiktok_ads", "tiktokads")
-
-# alias dei nomi metrica (Triple Whale può usare nomi diversi a seconda della vista)
-_SPEND = ("spend", "adSpend", "ad_spend", "spends", "cost", "totalSpend")
-_REVENUE = ("revenue", "conversionValue", "pixelConversionValue", "blendedRevenue",
-            "totalRevenue", "pixelRevenue", "attributedRevenue")
-_ORDERS = ("purchases", "conversions", "orders", "pixelPurchases", "totalOrders",
-           "pixelConversions", "attributedPurchases")
-_CLICKS = ("clicks", "totalClicks")
-_IMPRESSIONS = ("impressions", "totalImpressions")
-_ROAS = ("roas", "blendedRoas", "pixelRoas", "attributedRoas")
-
-
 class TripleWhaleError(RuntimeError):
     """Errore generico del connettore Triple Whale."""
 
@@ -124,108 +110,94 @@ class TripleWhaleConnector:
 
 
 # --------------------------------------------------------------------------- #
-# Estrazione difensiva del SOLO canale TikTok dalla risposta Summary
+# Estrazione TikTok dai METRIC TILE del Summary.
+# Il Summary è una lista di tile; ogni metrica è un tile identificato da metricId,
+# e il valore del periodo è in node["values"]["current"].
+# I valori TikTok sono GIÀ in USD: nessuna conversione EUR->USD.
 # --------------------------------------------------------------------------- #
-def _looks_tiktok(value) -> bool:
-    return isinstance(value, str) and any(k in value.lower() for k in _TIKTOK_KEYS)
+
+# Mappa: campo logico -> metricId esatto di Triple Whale (canale TikTok).
+TIKTOK_METRIC_IDS = {
+    "spend": "tiktok_spend",
+    "roas": "tiktok_complete_payment_roas",
+    "impressions": "tiktokImpressions",
+    "clicks": "tiktok_clicks",
+    "cpm": "averageTiktokCpm",
+    "non_tracked_spend": "tiktokNonTrackedSpend",  # TikTok GMV Max Ads spend
+}
+# possibili metricId per ordini/conversioni TikTok (best-effort, se presenti)
+_TIKTOK_ORDER_IDS = (
+    "tiktok_purchases",
+    "tiktok_complete_payment",
+    "tiktok_web_complete_payment",
+    "tiktok_conversions",
+)
 
 
-def _node_is_tiktok(node: dict) -> bool:
-    """Un dict è il nodo TikTok se un suo campo identificativo contiene 'tiktok'."""
-    for field in ("id", "service", "serviceId", "channel", "name", "key", "source", "provider"):
-        if _looks_tiktok(node.get(field)):
-            return True
-    return False
+def _num(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def find_tiktok_node(obj):
-    """
-    Cerca ricorsivamente il nodo TikTok nella risposta Summary.
-    Ritorna il dict del canale TikTok, oppure None.
-    """
-    if isinstance(obj, dict):
-        if _node_is_tiktok(obj):
-            return obj
-        # chiave del dict che contiene 'tiktok' -> il valore è il nodo
-        for k, v in obj.items():
-            if _looks_tiktok(k) and isinstance(v, dict):
-                return v
-        for v in obj.values():
-            found = find_tiktok_node(v)
-            if found is not None:
-                return found
-    elif isinstance(obj, list):
-        for item in obj:
-            found = find_tiktok_node(item)
-            if found is not None:
-                return found
-    return None
+def collect_metric_values(summary) -> dict:
+    """Scansiona ricorsivamente tutti i tile e mappa metricId -> values.current."""
+    out: dict = {}
 
+    def walk(obj):
+        if isinstance(obj, dict):
+            mid = obj.get("metricId")
+            vals = obj.get("values")
+            if mid is not None and isinstance(vals, dict) and "current" in vals:
+                out[mid] = vals["current"]
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for it in obj:
+                walk(it)
 
-def _metric(node: dict, names) -> float:
-    for n in names:
-        if n in node and isinstance(node[n], (int, float, str)):
-            try:
-                return float(node[n])
-            except (TypeError, ValueError):
-                continue
-    # a volte le metriche sono annidate in node["metrics"]
-    metrics = node.get("metrics")
-    if isinstance(metrics, dict):
-        for n in names:
-            if n in metrics:
-                try:
-                    return float(metrics[n])
-                except (TypeError, ValueError):
-                    continue
-    return 0.0
-
-
-def _extract_campaigns(node: dict) -> list[dict]:
-    """Breakdown per campagna, se presente nel nodo TikTok (best-effort)."""
-    out: list[dict] = []
-    for key in ("campaigns", "breakdown", "children", "items", "rows"):
-        val = node.get(key)
-        if isinstance(val, list) and val and isinstance(val[0], dict):
-            for c in val:
-                out.append(
-                    {
-                        "campaign_id": str(
-                            c.get("id") or c.get("campaignId") or c.get("campaign_id") or ""
-                        ),
-                        "campaign_name": c.get("name") or c.get("campaignName") or "",
-                        "spend": _metric(c, _SPEND),
-                        "revenue": _metric(c, _REVENUE),
-                        "orders": _metric(c, _ORDERS),
-                        "clicks": _metric(c, _CLICKS),
-                        "impressions": _metric(c, _IMPRESSIONS),
-                    }
-                )
-            break
+    walk(summary)
     return out
 
 
 def extract_tiktok(summary: dict) -> Optional[dict]:
     """
-    Estrae i valori TikTok normalizzati dalla risposta Summary, o None se assente.
-    I numeri sono nella valuta riportata da Triple Whale (conversione USD altrove).
+    Estrae i valori TikTok (già in USD) dai metric tile del Summary, leggendo
+    values.current per ciascun metricId. Ritorna None se non c'è alcuna metrica TikTok.
+
+    - spend totale = tiktok_spend + tiktokNonTrackedSpend (GMV Max) -> sottratto dal net profit
+    - revenue = tiktok_spend × ROAS (tiktok_complete_payment_roas)
+    - nessun breakdown per campagna nel Summary (solo totali account).
     """
-    node = find_tiktok_node(summary)
-    if node is None:
+    vals = collect_metric_values(summary)
+    if not any(mid in vals for mid in TIKTOK_METRIC_IDS.values()):
         return None
-    currency = (
-        summary.get("currency")
-        or summary.get("accountCurrency")
-        or node.get("currency")
-        or "USD"
-    )
+
+    tracked_spend = _num(vals.get(TIKTOK_METRIC_IDS["spend"]))
+    non_tracked_spend = _num(vals.get(TIKTOK_METRIC_IDS["non_tracked_spend"]))
+    total_spend = tracked_spend + non_tracked_spend
+    roas = _num(vals.get(TIKTOK_METRIC_IDS["roas"]))
+    impressions = _num(vals.get(TIKTOK_METRIC_IDS["impressions"]))
+    clicks = _num(vals.get(TIKTOK_METRIC_IDS["clicks"]))
+    cpm = _num(vals.get(TIKTOK_METRIC_IDS["cpm"]))
+
+    orders = 0.0
+    for mid in _TIKTOK_ORDER_IDS:
+        if mid in vals:
+            orders = _num(vals.get(mid))
+            break
+
     return {
-        "currency": str(currency).upper(),
-        "spend": _metric(node, _SPEND),
-        "revenue": _metric(node, _REVENUE),
-        "orders": _metric(node, _ORDERS),
-        "clicks": _metric(node, _CLICKS),
-        "impressions": _metric(node, _IMPRESSIONS),
-        "roas": _metric(node, _ROAS),  # se 0, verrà ricalcolato revenue/spend
-        "campaigns": _extract_campaigns(node),
+        "currency": "USD",                 # già USD: nessuna conversione
+        "spend": total_spend,              # tiktok_spend + GMV Max (net profit)
+        "tracked_spend": tracked_spend,
+        "non_tracked_spend": non_tracked_spend,
+        "revenue": tracked_spend * roas,   # spend × roas
+        "roas": roas,                      # ROAS riportato dalla piattaforma
+        "impressions": impressions,
+        "clicks": clicks,
+        "cpm": cpm,
+        "orders": orders,                  # 0 se non presente -> CPA saltato
+        "campaigns": [],                   # nessun breakdown per campagna nel Summary
     }

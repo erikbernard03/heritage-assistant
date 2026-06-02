@@ -317,23 +317,11 @@ def _format_tiktok_section(
         f"\n🎵 *TikTok Ads — {tiktok_daily.get('day')}* _(USD, via Triple Whale)_\n"
         f"   • Spend: *${spend:,.2f}*\n"
         f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
-        f"   • CPA: ${cpa:,.2f}\n"
-        f"   • Attributed revenue: ${revenue:,.2f} · conversions: {orders}\n"
+        f"   • Attributed revenue: ${revenue:,.2f}\n"
     )
-
-    campaigns = tiktok_campaigns or []
-    if campaigns:
-        out += "\n*Campaign breakdown* (top by spend):\n"
-        for c in campaigns[:8]:
-            name = (c.get("campaign_name") or "(no name)")[:34]
-            c_spend = float(c.get("spend") or 0)
-            c_rev = float(c.get("revenue") or 0)
-            c_ord = int(c.get("orders") or 0)
-            c_cvr = float(c.get("cvr") or 0) * 100
-            out += (
-                f"• *{name}* — spend ${c_spend:,.0f} · "
-                f"rev ${c_rev:,.0f} · ord {c_ord} · CVR {c_cvr:.1f}%\n"
-            )
+    # CPA/conversioni solo se TikTok riporta gli ordini (altrimenti saltati)
+    if orders > 0:
+        out += f"   • CPA: ${cpa:,.2f} · conversions: {orders}\n"
     return out
 
 
