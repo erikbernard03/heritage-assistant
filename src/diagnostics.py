@@ -8,6 +8,7 @@ degli ultimi 7 giorni (SOLO campagne).
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timedelta
 
 import pytz
@@ -214,6 +215,18 @@ def triplewhale_diagnostic() -> str:
     from src.metrics.tiktok import compute_tiktok_metrics
 
     tw = TripleWhaleConnector()
+    out.append(f"shopDomain used: {tw.shop_domain or '(EMPTY!)'}")
+
+    # 0) validazione key + shops/permessi (GET /users/api-keys/me)
+    out.append("\n— Key validation: GET /users/api-keys/me —")
+    try:
+        me = tw.get_me()
+        snippet = json.dumps(me, ensure_ascii=False, default=str)
+        out.append("✅ key valid. Response:")
+        out.append(snippet[:1200] + ("…(truncated)" if len(snippet) > 1200 else ""))
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ /me call FAILED: {exc}")
+
     tz = pytz.timezone(settings.TIMEZONE)
     today = datetime.now(tz).date()
     yesterday = (today - timedelta(days=1)).isoformat()

@@ -20,8 +20,10 @@ Nessun LLM tocca questi numeri.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Optional
 
+import pytz
 import requests
 
 from config import settings
@@ -56,7 +58,11 @@ class TripleWhaleConnector:
         self.api_key = api_key or settings.TRIPLEWHALE_API_KEY
         self.base = (base or settings.TRIPLEWHALE_API_BASE).rstrip("/")
         self.summary_path = summary_path or settings.TRIPLEWHALE_SUMMARY_PATH
-        self.shop_id = shop_id or settings.TRIPLEWHALE_SHOP_ID
+        # shopDomain è OBBLIGATORIO per scopare la richiesta allo shop (altrimenti 403).
+        # Si legge da TRIPLEWHALE_SHOP_ID; in mancanza si usa SHOPIFY_STORE.
+        self.shop_domain = (
+            shop_id or settings.TRIPLEWHALE_SHOP_ID or settings.SHOPIFY_STORE
+        ).strip()
         self.timeout = timeout
         if not self.api_key:
             raise TripleWhaleError("TRIPLEWHALE_API_KEY non configurata (.env).")
@@ -88,17 +94,32 @@ class TripleWhaleConnector:
             raise TripleWhaleError(f"{method} {url} -> {resp.status_code}: {resp.text[:500]}")
         raise TripleWhaleError(f"{method} {url}: esauriti i retry (rate limit?).")
 
-    def get_summary(self, start: str, end: str) -> dict:
-        """Chiama l'endpoint Summary per l'intervallo [start, end] (YYYY-MM-DD). Raw JSON."""
-        body: dict = {
-            "startDate": start,
-            "endDate": end,
-            "timezone": settings.TIMEZONE,
+    def get_me(self) -> dict:
+        """Valida la API key e ritorna shop/permessi associati (GET /users/api-keys/me)."""
+        return self._request("GET", "/users/api-keys/me")
+
+    def _today_hour(self) -> int:
+        """todayHour richiesto dall'API, base-1 (1–25), ora corrente Europe/Rome."""
+        h = datetime.now(pytz.timezone(settings.TIMEZONE)).hour + 1
+        return max(1, min(h, 25))
+
+    def get_summary(self, start: str, end: str, today_hour: Optional[int] = None) -> dict:
+        """
+        Chiama l'endpoint Summary per [start, end] (YYYY-MM-DD). Raw JSON.
+
+        Body richiesto dall'API (vedi docs Triple Whale):
+            {"shopDomain": "...", "period": {"start": "...", "end": "..."}, "todayHour": N}
+        shopDomain è obbligatorio: senza, l'API risponde 403 Access Denied.
+        """
+        if not self.shop_domain:
+            raise TripleWhaleError(
+                "shopDomain mancante: imposta TRIPLEWHALE_SHOP_ID (o SHOPIFY_STORE)."
+            )
+        body = {
+            "shopDomain": self.shop_domain,
+            "period": {"start": start, "end": end},
+            "todayHour": today_hour if today_hour is not None else self._today_hour(),
         }
-        if self.shop_id:
-            # alcune installazioni richiedono lo shop: passiamo entrambe le chiavi note
-            body["shopId"] = self.shop_id
-            body["shopDomain"] = self.shop_id
         return self._request("POST", self.summary_path, json_body=body)
 
 
