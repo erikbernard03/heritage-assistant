@@ -63,10 +63,25 @@ def test_compute_google_metrics_usd():
     assert c.as_db_row()["store_cvr"] == 0.0234
 
 
-def test_extract_store_cvr():
+def test_extract_store_cvr_from_sessions():
+    # preferito: pixelPurchases / sessions -> 10/400 = 0.025 = 2.5%
     summary = {"data": [
-        {"metricId": "averageGaTransactionsPerSession", "values": {"current": 0.0234}},
+        {"metricId": "pixelPurchases", "values": {"current": 10}},
+        {"metricId": "sessions", "values": {"current": 400}},
+        {"metricId": "pixelConversionRate", "values": {"current": 0.4399}},
     ]}
-    assert round(extract_store_cvr(summary), 4) == 0.0234
-    # assente -> None
+    assert round(extract_store_cvr(summary), 4) == 0.025
+
+
+def test_extract_store_cvr_fallback_pixelConversionRate_as_percent():
+    # nessuna sessione -> pixelConversionRate (0.4399 inteso come 0.4399%)
+    summary = {"data": [
+        {"metricId": "pixelPurchases", "values": {"current": 10}},
+        {"metricId": "pixelConversionRate", "values": {"current": 0.4399}},
+    ]}
+    cvr = extract_store_cvr(summary)
+    assert round(cvr * 100, 4) == 0.4399   # display = 0.44%
+
+
+def test_extract_store_cvr_absent_returns_none():
     assert extract_store_cvr({"data": [{"metricId": "ga_adCost", "values": {"current": 10}}]}) is None

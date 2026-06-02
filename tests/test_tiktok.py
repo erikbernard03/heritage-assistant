@@ -15,10 +15,13 @@ def _summary_with_tiktok():
             {"metricId": "tiktok_spend", "title": "TikTok Ad Spend",
              "values": {"current": 145.94}},
             {"metricId": "tiktokNonTrackedSpend", "values": {"current": 20.0}},
-            {"metricId": "tiktok_complete_payment_roas", "values": {"current": 2.0}},
+            {"metricId": "tiktok_complete_payment_roas", "values": {"current": 2.1}},
             {"metricId": "tiktokImpressions", "values": {"current": 10000}},
             {"metricId": "tiktok_clicks", "values": {"current": 300}},
             {"metricId": "averageTiktokCpm", "values": {"current": 14.6}},
+            {"metricId": "tiktokPurchases", "values": {"current": 2}},
+            {"metricId": "tiktokCpa", "values": {"current": 72.97}},
+            {"metricId": "tiktokConversionValue", "values": {"current": 307.0}},
         ]
     }
 
@@ -29,14 +32,15 @@ def test_extract_tiktok_from_metric_tiles():
     assert round(tk["tracked_spend"], 2) == 145.94
     assert tk["non_tracked_spend"] == 20.0
     assert round(tk["spend"], 2) == 165.94                 # tracked + GMV Max
-    assert tk["roas"] == 2.0
-    assert round(tk["revenue"], 2) == round(145.94 * 2.0, 2)  # spend × roas (tracked)
+    assert tk["roas"] == 2.1
+    assert tk["revenue"] == 307.0       # tiktokConversionValue (reale, non spend×roas)
+    assert tk["orders"] == 2            # tiktokPurchases
+    assert tk["cpa"] == 72.97           # tiktokCpa (riportato)
     assert tk["impressions"] == 10000
     assert tk["clicks"] == 300
     assert tk["cpm"] == 14.6
-    assert tk["currency"] == "USD"      # già USD, nessuna conversione
-    assert tk["orders"] == 0.0          # nessuna metrica ordini -> 0
-    assert tk["campaigns"] == []        # nessun breakdown per campagna
+    assert tk["currency"] == "USD"
+    assert tk["campaigns"] == []
 
 
 def test_extract_tiktok_absent_returns_none():
@@ -50,6 +54,8 @@ def test_compute_from_extracted_tiktok():
     assert c.account_currency == "USD"
     assert c.fx_to_usd == 1.0
     assert round(c.spend, 2) == 165.94    # totale, usato nel net profit
-    assert c.roas == 2.0
-    assert c.cpa == 0.0                    # orders 0 -> CPA saltato
+    assert c.roas == 2.1
+    assert c.revenue == 307.0
+    assert c.orders == 2
+    assert c.cpa == 72.97                  # CPA riportato (non spend/orders)
     assert c.campaigns == []

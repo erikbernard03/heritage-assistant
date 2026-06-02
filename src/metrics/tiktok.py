@@ -108,7 +108,11 @@ def compute_tiktok_metrics(day: str, tiktok: dict) -> TikTokDaily:
     daily.roas = reported_roas if reported_roas else (
         (daily.revenue / daily.spend) if daily.spend else 0.0
     )
-    daily.cpa = (daily.spend / daily.orders) if daily.orders else 0.0
+    # CPA riportato (tiktokCpa); fallback a spend/orders se assente
+    reported_cpa = _to_float(tiktok.get("cpa"))
+    daily.cpa = reported_cpa if reported_cpa else (
+        (daily.spend / daily.orders) if daily.orders else 0.0
+    )
 
     for c in tiktok.get("campaigns") or []:
         spend = _to_float(c.get("spend")) * fx

@@ -124,14 +124,10 @@ TIKTOK_METRIC_IDS = {
     "clicks": "tiktok_clicks",
     "cpm": "averageTiktokCpm",
     "non_tracked_spend": "tiktokNonTrackedSpend",  # TikTok GMV Max Ads spend
+    "orders": "tiktokPurchases",                   # conversioni/ordini (reali)
+    "cpa": "tiktokCpa",                            # CPA riportato
+    "revenue": "tiktokConversionValue",            # revenue attribuito (reale)
 }
-# possibili metricId per ordini/conversioni TikTok (best-effort, se presenti)
-_TIKTOK_ORDER_IDS = (
-    "tiktok_purchases",
-    "tiktok_complete_payment",
-    "tiktok_web_complete_payment",
-    "tiktok_conversions",
-)
 
 
 def _num(value) -> float:
@@ -167,7 +163,8 @@ def extract_tiktok(summary: dict) -> Optional[dict]:
     values.current per ciascun metricId. Ritorna None se non c'è alcuna metrica TikTok.
 
     - spend totale = tiktok_spend + tiktokNonTrackedSpend (GMV Max) -> sottratto dal net profit
-    - revenue = tiktok_spend × ROAS (tiktok_complete_payment_roas)
+    - revenue = tiktokConversionValue (reale, riportato)
+    - orders = tiktokPurchases · CPA = tiktokCpa (entrambi riportati)
     - nessun breakdown per campagna nel Summary (solo totali account).
     """
     vals = collect_metric_values(summary)
@@ -177,28 +174,19 @@ def extract_tiktok(summary: dict) -> Optional[dict]:
     tracked_spend = _num(vals.get(TIKTOK_METRIC_IDS["spend"]))
     non_tracked_spend = _num(vals.get(TIKTOK_METRIC_IDS["non_tracked_spend"]))
     total_spend = tracked_spend + non_tracked_spend
-    roas = _num(vals.get(TIKTOK_METRIC_IDS["roas"]))
-    impressions = _num(vals.get(TIKTOK_METRIC_IDS["impressions"]))
-    clicks = _num(vals.get(TIKTOK_METRIC_IDS["clicks"]))
-    cpm = _num(vals.get(TIKTOK_METRIC_IDS["cpm"]))
-
-    orders = 0.0
-    for mid in _TIKTOK_ORDER_IDS:
-        if mid in vals:
-            orders = _num(vals.get(mid))
-            break
 
     return {
         "currency": "USD",                 # già USD: nessuna conversione
         "spend": total_spend,              # tiktok_spend + GMV Max (net profit)
         "tracked_spend": tracked_spend,
         "non_tracked_spend": non_tracked_spend,
-        "revenue": tracked_spend * roas,   # spend × roas
-        "roas": roas,                      # ROAS riportato dalla piattaforma
-        "impressions": impressions,
-        "clicks": clicks,
-        "cpm": cpm,
-        "orders": orders,                  # 0 se non presente -> CPA saltato
+        "revenue": _num(vals.get(TIKTOK_METRIC_IDS["revenue"])),  # tiktokConversionValue
+        "roas": _num(vals.get(TIKTOK_METRIC_IDS["roas"])),
+        "impressions": _num(vals.get(TIKTOK_METRIC_IDS["impressions"])),
+        "clicks": _num(vals.get(TIKTOK_METRIC_IDS["clicks"])),
+        "cpm": _num(vals.get(TIKTOK_METRIC_IDS["cpm"])),
+        "orders": _num(vals.get(TIKTOK_METRIC_IDS["orders"])),    # tiktokPurchases
+        "cpa": _num(vals.get(TIKTOK_METRIC_IDS["cpa"])),          # tiktokCpa (riportato)
         "campaigns": [],                   # nessun breakdown per campagna nel Summary
     }
 
@@ -219,19 +207,51 @@ GOOGLE_METRIC_IDS = {
 }
 _GOOGLE_CPA_ALT = "googleAllCpa"
 
-# CVR del negozio (store conversion rate): GA transactions per session, già calcolato.
-STORE_CVR_METRIC_ID = "averageGaTransactionsPerSession"
+# CVR del negozio. averageGaTransactionsPerSession spesso = 0 (inutilizzabile), quindi:
+# 1) preferito (più affidabile): pixelPurchases / sessions  (se esiste una metrica sessioni)
+# 2) fallback: pixelConversionRate (valore già in PERCENTUALE, es. 0.4399 -> 0.44%)
+_SESSIONS_METRIC_IDS = (
+    "sessions", "pixelSessions", "totalSessions", "sessionsCount", "visits", "totalVisits",
+)
+
+
+def store_cvr_debug(summary: dict) -> dict:
+    """Valori grezzi utili per capire da dove arriva la CVR (per la diagnostica)."""
+    vals = collect_metric_values(summary)
+    sessions_mid = next((s for s in _SESSIONS_METRIC_IDS if s in vals), None)
+    return {
+        "pixelPurchases": _num(vals.get("pixelPurchases")) if "pixelPurchases" in vals else None,
+        "pixelConversionRate": _num(vals.get("pixelConversionRate")) if "pixelConversionRate" in vals else None,
+        "sessions_metricId": sessions_mid,
+        "sessions": _num(vals.get(sessions_mid)) if sessions_mid else None,
+    }
 
 
 def extract_store_cvr(summary: dict) -> Optional[float]:
     """
-    Estrae la CVR di negozio (values.current di averageGaTransactionsPerSession).
-    È già una percentuale calcolata (frazione, es. 0.0234 = 2.34%). None se assente.
+    CVR di negozio come FRAZIONE (es. 0.025 = 2.5%). None se non ricavabile.
+    Priorità: pixelPurchases/sessions (se sessioni disponibili); altrimenti
+    pixelConversionRate (interpretato come percentuale, >0.2 => già in %).
     """
     vals = collect_metric_values(summary)
-    if STORE_CVR_METRIC_ID not in vals:
-        return None
-    return _num(vals.get(STORE_CVR_METRIC_ID))
+
+    purchases = _num(vals.get("pixelPurchases"))
+    sessions = 0.0
+    for sid in _SESSIONS_METRIC_IDS:
+        if sid in vals:
+            s = _num(vals.get(sid))
+            if s:
+                sessions = s
+                break
+    if purchases and sessions:
+        return purchases / sessions  # frazione
+
+    if "pixelConversionRate" in vals:
+        pcr = _num(vals.get("pixelConversionRate"))
+        # pixelConversionRate è in PERCENTUALE (0.4399 = 0.44%). Se invece fosse una
+        # frazione plausibile (<=0.2 cioè <=20%) la usiamo così com'è.
+        return (pcr / 100.0) if pcr > 0.2 else pcr
+    return None
 
 
 def extract_google(summary: dict) -> Optional[dict]:
