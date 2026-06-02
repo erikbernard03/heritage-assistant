@@ -228,41 +228,62 @@ def triplewhale_diagnostic() -> str:
         out.append(f"❌ /me call FAILED: {exc}")
 
     tz = pytz.timezone(settings.TIMEZONE)
-    today = datetime.now(tz).date()
-    yesterday = (today - timedelta(days=1)).isoformat()
-    since7 = (today - timedelta(days=7)).isoformat()
+    yesterday = (datetime.now(tz).date() - timedelta(days=1)).isoformat()
 
-    for label, start, end in (
-        ("yesterday", yesterday, yesterday),
-        ("last 7 days", since7, (today - timedelta(days=1)).isoformat()),
-    ):
-        out.append(f"\n— Summary {label} ({start} → {end}) —")
-        try:
-            summary = tw.get_summary(start, end)
-            out.append("✅ API call OK.")
-            if isinstance(summary, dict):
-                out.append("Top-level keys: " + ", ".join(list(summary.keys())[:15]))
-            node = find_tiktok_node(summary)
-            if node is None:
-                out.append("⚠️ No TikTok channel found in the Summary response.")
-                continue
-            if isinstance(node, dict):
-                out.append("TikTok node keys: " + ", ".join(list(node.keys())[:20]))
-            tiktok = extract_tiktok(summary)
-            computed = compute_tiktok_metrics(label, tiktok)
-            out.append(
-                f"TikTok (USD, currency={computed.account_currency}, fx={computed.fx_to_usd:.4f}): "
-                f"spend ${computed.spend:,.2f} · ROAS {computed.roas:,.2f}x · "
-                f"impr {computed.impressions:,} · clicks {computed.clicks:,} · "
-                f"conv {computed.orders:,} · rev ${computed.revenue:,.2f}"
-            )
-            if computed.campaigns:
-                out.append("Per-campaign spend (top 8):")
-                for c in computed.campaigns[:8]:
-                    out.append(f"  • {c.campaign_name[:34]} — ${c.spend:,.2f}  id={c.campaign_id}")
-            else:
-                out.append("(no per-campaign breakdown in this response)")
-        except Exception as exc:  # noqa: BLE001
-            out.append(f"❌ call FAILED: {exc}")
+    out.append(f"\n— Summary {yesterday} (RAW STRUCTURE — mapping not finalized) —")
+    try:
+        summary = tw.get_summary(yesterday, yesterday)
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ summary call FAILED: {exc}")
+        return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)
+
+    out.append("✅ API call OK.")
+    if isinstance(summary, dict):
+        out.append("Top-level keys: " + ", ".join(list(summary.keys())[:20]))
+
+    # raccoglie tutti i nodi-metrica (dict con 'metricId', oppure title+values)
+    nodes: list[dict] = []
+
+    def _collect(obj):
+        if isinstance(obj, dict):
+            if "metricId" in obj or ("title" in obj and "values" in obj):
+                nodes.append(obj)
+            for v in obj.values():
+                _collect(v)
+        elif isinstance(obj, list):
+            for it in obj:
+                _collect(it)
+
+    _collect(summary)
+
+    out.append(f"\nAll metric nodes ({len(nodes)}): title — metricId")
+    for n in nodes[:80]:
+        out.append(f"  • {n.get('title')!r} — metricId={n.get('metricId')!r}")
+
+    # nodi che citano TikTok (per id/title/metricId); fallback al matcher generico
+    def _is_tt(n: dict) -> bool:
+        blob = f"{n.get('id')} {n.get('title')} {n.get('metricId')}".lower()
+        return "tiktok" in blob
+
+    tt_nodes = [n for n in nodes if _is_tt(n)]
+    if not tt_nodes:
+        one = find_tiktok_node(summary)
+        if one is not None:
+            tt_nodes = [one]
+
+    out.append(f"\nTikTok-related nodes found: {len(tt_nodes)}")
+    for idx, node in enumerate(tt_nodes[:6]):
+        out.append(
+            f"\n===== TikTok node #{idx} — title={node.get('title')!r} "
+            f"metricId={node.get('metricId')!r} type={node.get('type')!r} ====="
+        )
+        out.append("keys: " + ", ".join(list(node.keys())))
+        for field in ("values", "delta", "services"):
+            blob = json.dumps(node.get(field), indent=2, ensure_ascii=False, default=str)
+            cut = blob[:2600] + ("\n…(truncated)" if len(blob) > 2600 else "")
+            out.append(f"\n--- {field} ---\n{cut}")
+        charts = json.dumps(node.get("charts"), indent=2, ensure_ascii=False, default=str)
+        cut = charts[:1800] + ("\n…(truncated)" if len(charts) > 1800 else "")
+        out.append(f"\n--- charts (sample) ---\n{cut}")
 
     return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)
