@@ -4,7 +4,7 @@ Test deterministici dell'estrazione/calcolo Google Ads (no rete, no credenziali)
 Verificano la mappatura per metricId (values.current), valori in USD (no conversione),
 e l'uso del ROAS/CPA riportati.
 """
-from src.connectors.triplewhale import extract_google
+from src.connectors.triplewhale import extract_google, extract_store_cvr
 from src.metrics.google import compute_google_metrics
 
 
@@ -52,10 +52,21 @@ def test_extract_google_absent_returns_none():
 
 def test_compute_google_metrics_usd():
     g = extract_google(_summary_with_google())
-    c = compute_google_metrics("2026-05-31", g)
+    c = compute_google_metrics("2026-05-31", g, store_cvr=0.0234)
     assert c.account_currency == "USD"
     assert c.fx_to_usd == 1.0
     assert round(c.spend, 2) == 210.50
     assert c.roas == 3.2
     assert c.cpa == 18.0
     assert c.orders == 12
+    assert round(c.store_cvr, 4) == 0.0234
+    assert c.as_db_row()["store_cvr"] == 0.0234
+
+
+def test_extract_store_cvr():
+    summary = {"data": [
+        {"metricId": "averageGaTransactionsPerSession", "values": {"current": 0.0234}},
+    ]}
+    assert round(extract_store_cvr(summary), 4) == 0.0234
+    # assente -> None
+    assert extract_store_cvr({"data": [{"metricId": "ga_adCost", "values": {"current": 10}}]}) is None

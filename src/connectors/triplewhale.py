@@ -219,6 +219,20 @@ GOOGLE_METRIC_IDS = {
 }
 _GOOGLE_CPA_ALT = "googleAllCpa"
 
+# CVR del negozio (store conversion rate): GA transactions per session, già calcolato.
+STORE_CVR_METRIC_ID = "averageGaTransactionsPerSession"
+
+
+def extract_store_cvr(summary: dict) -> Optional[float]:
+    """
+    Estrae la CVR di negozio (values.current di averageGaTransactionsPerSession).
+    È già una percentuale calcolata (frazione, es. 0.0234 = 2.34%). None se assente.
+    """
+    vals = collect_metric_values(summary)
+    if STORE_CVR_METRIC_ID not in vals:
+        return None
+    return _num(vals.get(STORE_CVR_METRIC_ID))
+
 
 def extract_google(summary: dict) -> Optional[dict]:
     """

@@ -40,6 +40,7 @@ class GoogleDaily:
     impressions: int = 0
     roas: float = 0.0
     cpa: float = 0.0
+    store_cvr: float = 0.0   # CVR di negozio (frazione, es. 0.0234 = 2.34%)
 
     def as_db_row(self) -> dict:
         return {
@@ -51,13 +52,17 @@ class GoogleDaily:
             "impressions": self.impressions,
             "roas": round(self.roas, 4),
             "cpa": round(self.cpa, 2),
+            "store_cvr": round(self.store_cvr, 6),
             "account_currency": self.account_currency,
             "fx_to_usd": round(self.fx_to_usd, 6),
         }
 
 
-def compute_google_metrics(day: str, google: dict) -> GoogleDaily:
+def compute_google_metrics(
+    day: str, google: dict, store_cvr: float = 0.0
+) -> GoogleDaily:
     """Costruisce le metriche Google (USD) dal dict estratto da Triple Whale."""
+    google = google or {}
     spend = _to_float(google.get("spend"))
     revenue = _to_float(google.get("revenue"))
     orders = _to_int(google.get("orders"))
@@ -76,4 +81,5 @@ def compute_google_metrics(day: str, google: dict) -> GoogleDaily:
         impressions=impressions,
         roas=roas,
         cpa=cpa,
+        store_cvr=_to_float(store_cvr),
     )

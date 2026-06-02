@@ -301,10 +301,15 @@ def google_diagnostic() -> str:
             if not g:
                 out.append("⚠️ No Google metrics found in the Summary response.")
                 continue
-            c = compute_google_metrics(label, g)
+            from src.connectors.triplewhale import extract_store_cvr
+
+            cvr = extract_store_cvr(summary)
+            c = compute_google_metrics(label, g, store_cvr=cvr or 0.0)
             out.append(f"✅ Spend: ${c.spend:,.2f} · ROAS: {c.roas:,.2f}x")
             out.append(f"Revenue: ${c.revenue:,.2f} · conversions: {c.orders} · CPA: ${c.cpa:,.2f}")
             out.append(f"Impressions: {c.impressions:,} · Clicks: {c.clicks:,}")
+            cvr_str = f"{c.store_cvr * 100:.2f}%" if c.store_cvr > 0 else "n/a"
+            out.append(f"Store CVR (averageGaTransactionsPerSession): {cvr_str}")
         except Exception as exc:  # noqa: BLE001
             out.append(f"❌ call FAILED: {exc}")
 

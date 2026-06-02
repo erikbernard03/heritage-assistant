@@ -230,19 +230,25 @@ def _load_google(day: str, start: str, end: str, persist: bool, force: bool = Fa
         if cached:
             return cached, float(cached.get("spend") or 0.0)
 
-    # 2) nessuna cache: UNA pull Summary + estrazione SOLO Google
+    # 2) nessuna cache: UNA pull Summary + estrazione Google + CVR di negozio
     try:
-        from src.connectors.triplewhale import TripleWhaleConnector, extract_google
+        from src.connectors.triplewhale import (
+            TripleWhaleConnector,
+            extract_google,
+            extract_store_cvr,
+        )
         from src.metrics.google import compute_google_metrics
 
         tw = TripleWhaleConnector()
         summary = tw.get_summary(start, end)
         google = extract_google(summary)
-        if not google:
-            print("[report] nessuna metrica Google trovata nel Summary di Triple Whale.")
+        cvr = extract_store_cvr(summary)
+        if not google and cvr is None:
+            print("[report] nessuna metrica Google/CVR trovata nel Summary di Triple Whale.")
             return None, 0.0
 
-        computed = compute_google_metrics(day, google)
+        # anche se mancano le metriche Google, salviamo comunque la CVR di negozio
+        computed = compute_google_metrics(day, google or {}, store_cvr=cvr or 0.0)
         if persist and store is not None:
             store.upsert_google_daily(computed)
         return computed.as_db_row(), computed.spend
@@ -315,6 +321,26 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         print(f"[report] persistenza Supabase saltata: {exc}")
 
 
+def _fmt_cvr(google_daily: Optional[dict]) -> str:
+    """CVR di negozio formattata in % (frazione -> percentuale). 'n/a' se assente."""
+    if google_daily:
+        cvr = float(google_daily.get("store_cvr") or 0)
+        if cvr > 0:
+            return f"{cvr * 100:.2f}%"
+    return "n/a"
+
+
+def _roas_cpa_line(emoji: str, name: str, daily: Optional[dict]) -> Optional[str]:
+    """Riga compatta ROAS/CPA per la Sezione 1 (None se la piattaforma non ha dati)."""
+    if not daily:
+        return None
+    roas = float(daily.get("roas") or 0)
+    orders = int(daily.get("orders") or 0)
+    cpa = float(daily.get("cpa") or 0)
+    cpa_str = f"${cpa:,.2f}" if orders > 0 else "n/a"
+    return f"{emoji} {name} — ROAS {roas:,.2f}x · CPA {cpa_str}"
+
+
 def format_report(
     m: DailyMetrics,
     meta_daily: Optional[dict] = None,
@@ -325,36 +351,56 @@ def format_report(
     tiktok_campaigns: Optional[list[dict]] = None,
     google_daily: Optional[dict] = None,
 ) -> str:
-    """Formatta il report Telegram (Markdown). Tutti i valori in USD."""
-    fixed_line = ""
-    if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
-        fixed_line = f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}\n"
+    """
+    Report Telegram in 3 sezioni (Markdown, tutto in USD):
+      1) KEY METRICS  2) COST BREAKDOWN  3) PER-PLATFORM AD BREAKDOWN
+    Tutti i numeri sono deterministici (nessun LLM).
+    """
+    out: list[str] = [f"📊 *Daily report — {m.day}* _(USD)_"]
 
-    ads_line = ""
-    if m.ads_spend > 0:
-        ads_line = f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}\n"
-
-    report = (
-        f"📊 *Daily report — {m.day}*\n"
-        f"_(currency: USD)_\n\n"
-        f"🛒 Orders: *{m.num_orders}*\n"
-        f"💰 Revenue: *${m.revenue:,.2f}*\n"
-        f"🧾 AOV: ${m.aov:,.2f}\n\n"
-        f"*Costs for the day*\n"
-        f"   • Product COGS: −${m.cogs_total:,.2f}\n"
-        f"   • Shipping ($7 × {m.num_orders}): −${m.shipping_total:,.2f}\n"
-        f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}\n"
-        f"{ads_line}"
-        f"{fixed_line}\n"
-        f"*Net profit*\n"
-        f"   • Operating (excl. fixed costs): *${m.net_profit_operativo:,.2f}*\n"
-        f"   • Net (incl. fixed costs): *${m.net_profit_netto:,.2f}*\n"
+    # ---- SEZIONE 1 — KEY METRICS --------------------------------------------
+    out.append("\n*1) KEY METRICS*")
+    out.append(
+        f"💵 Net profit — operating *${m.net_profit_operativo:,.2f}* · "
+        f"net *${m.net_profit_netto:,.2f}*"
     )
-    report += _format_meta_section(meta_daily, meta_campaigns)
-    report += _format_tiktok_section(tiktok_daily, tiktok_campaigns)
-    report += _format_google_section(google_daily)
-    report += _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
-    return report
+    out.append(f"💰 Revenue: *${m.revenue:,.2f}*")
+    out.append(f"🛒 Orders: *{m.num_orders}*")
+    out.append(f"🧾 AOV: ${m.aov:,.2f}")
+    out.append(f"📈 Store CVR: {_fmt_cvr(google_daily)}")
+    for line in (
+        _roas_cpa_line("📣", "Meta", meta_daily),
+        _roas_cpa_line("🎵", "TikTok", tiktok_daily),
+        _roas_cpa_line("🔎", "Google", google_daily),
+    ):
+        if line:
+            out.append(line)
+    if klaviyo_daily:
+        kla_rev = float(klaviyo_daily.get("revenue") or 0)
+        out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
+
+    # ---- SEZIONE 2 — COST BREAKDOWN -----------------------------------------
+    out.append("\n*2) COST BREAKDOWN*")
+    out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
+    out.append(f"   • Shipping ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
+    out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
+    if m.ads_spend > 0:
+        out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")
+    if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
+        out.append(f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}")
+
+    # ---- SEZIONE 3 — PER-PLATFORM AD BREAKDOWN ------------------------------
+    section3 = (
+        _format_meta_section(meta_daily, meta_campaigns)
+        + _format_tiktok_section(tiktok_daily, tiktok_campaigns)
+        + _format_google_section(google_daily)
+        + _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
+    )
+    if section3.strip():
+        out.append("\n*3) AD PLATFORMS*")
+        out.append(section3.rstrip("\n"))
+
+    return "\n".join(out) + "\n"
 
 
 def _format_google_section(google_daily: Optional[dict]) -> str:
