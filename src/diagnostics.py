@@ -37,6 +37,42 @@ def _rome_window(days_back_start: int, days_back_end: int):
     return start.isoformat(), end.isoformat(), label
 
 
+# keyword per scoprire i metricId di CPA/conversioni TikTok & Google nel Summary
+_TILE_SCAN_KEYWORDS = ("cpa", "conversion", "purchase", "cost per", "tiktok", "google", "ga_")
+
+
+def _scan_metric_tiles(summary: dict, keywords=_TILE_SCAN_KEYWORDS, limit: int = 150) -> list[str]:
+    """
+    Scansiona TUTTI i tile del Summary e ritorna 'title — metricId — values.current'
+    per i tile il cui title o metricId contiene una delle keyword (case-insensitive).
+    Serve a scoprire i metricId esatti (es. CPA/conversioni TikTok & Google).
+    """
+    tiles: list[tuple] = []
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            mid = obj.get("metricId")
+            vals = obj.get("values")
+            if mid is not None and isinstance(vals, dict) and "current" in vals:
+                tiles.append((obj.get("title"), mid, vals["current"]))
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for it in obj:
+                walk(it)
+
+    walk(summary)
+    kws = [k.lower() for k in keywords]
+    lines: list[str] = []
+    for title, mid, cur in tiles:
+        blob = f"{title} {mid}".lower()
+        if any(k in blob for k in kws):
+            lines.append(f"  • {title!r} — {mid} — {cur}")
+    if len(lines) > limit:
+        lines = lines[:limit] + [f"  …(+{len(lines) - limit} more, refine keywords)"]
+    return lines
+
+
 def klaviyo_diagnostic() -> str:
     """Esegue la diagnostica Klaviyo e ritorna un report testuale (key mascherata)."""
     out: list[str] = []
@@ -240,9 +276,12 @@ def triplewhale_diagnostic() -> str:
         out.append(f"\n— TikTok {label} ({start} → {end}) —")
         try:
             summary = tw.get_summary(start, end)
+            if label == "yesterday":
+                out.append("🔍 Metric discovery (title — metricId — values.current):")
+                out.extend(_scan_metric_tiles(summary))
             tk = extract_tiktok(summary)
             if not tk:
-                out.append("⚠️ No TikTok metrics found in the Summary response.")
+                out.append("⚠️ No TikTok metrics found via current mapping.")
                 continue
             c = compute_tiktok_metrics(label, tk)
             out.append(
@@ -297,9 +336,12 @@ def google_diagnostic() -> str:
         out.append(f"\n— Google {label} ({start} → {end}) —")
         try:
             summary = tw.get_summary(start, end)
+            if label == "yesterday":
+                out.append("🔍 Metric discovery (title — metricId — values.current):")
+                out.extend(_scan_metric_tiles(summary))
             g = extract_google(summary)
             if not g:
-                out.append("⚠️ No Google metrics found in the Summary response.")
+                out.append("⚠️ No Google metrics found via current mapping.")
                 continue
             from src.connectors.triplewhale import extract_store_cvr
 
