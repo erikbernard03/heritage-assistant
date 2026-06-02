@@ -74,6 +74,12 @@ def build_daily_report(
         window.day_str, window.start.date().isoformat(), window.day_str, persist=persist
     )
 
+    # Google Ads via Triple Whale (Fase 2): una sola pull Summary/giorno (cache su DB);
+    # SOLO totali account. Anche questa spesa è un costo reale (sottratta dal net profit).
+    google_daily, google_spend = _load_google(
+        window.day_str, window.start.date().isoformat(), window.day_str, persist=persist
+    )
+
     # Klaviyo (Fase 4): una sola pull reporting/giorno (cache su DB); SOLO campagne.
     # È revenue attribuita (informativa): NON entra nel net profit.
     klaviyo_daily, klaviyo_campaigns = _load_klaviyo(
@@ -84,8 +90,8 @@ def build_daily_report(
         day=window.day_str,
         orders=orders,
         handle_map=handle_map,
-        # Fase 2+3: spesa ads totale (Meta + TikTok, USD) sottratta dal net profit
-        ads_spend=meta_spend + tiktok_spend,
+        # spesa ads totale (Meta + TikTok + Google, USD) sottratta dal net profit
+        ads_spend=meta_spend + tiktok_spend + google_spend,
     )
 
     if persist:
@@ -93,7 +99,7 @@ def build_daily_report(
 
     return metrics, format_report(
         metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
-        tiktok_daily, tiktok_campaigns,
+        tiktok_daily, tiktok_campaigns, google_daily,
     )
 
 
@@ -199,6 +205,52 @@ def _load_tiktok(day: str, start: str, end: str, persist: bool, force: bool = Fa
         return None, [], 0.0
 
 
+def _load_google(day: str, start: str, end: str, persist: bool, force: bool = False):
+    """
+    Restituisce (google_daily_dict | None, google_spend_usd).
+
+    Stessa regola di TikTok: UNA pull Summary al giorno, con cache su DB. Estrae SOLO
+    i totali Google (no per-campaign). Se Triple Whale non è configurato o fallisce,
+    il report prosegue (google_spend = 0). `start`/`end` sono date YYYY-MM-DD.
+    """
+    if not settings.TRIPLEWHALE_API_KEY:
+        return None, 0.0
+
+    store = None
+    try:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] Supabase non disponibile per Google: {exc}")
+
+    # 1) cache su DB (evita una nuova chiamata API)
+    if store is not None and not force:
+        cached = store.get_google_daily_for_day(day)
+        if cached:
+            return cached, float(cached.get("spend") or 0.0)
+
+    # 2) nessuna cache: UNA pull Summary + estrazione SOLO Google
+    try:
+        from src.connectors.triplewhale import TripleWhaleConnector, extract_google
+        from src.metrics.google import compute_google_metrics
+
+        tw = TripleWhaleConnector()
+        summary = tw.get_summary(start, end)
+        google = extract_google(summary)
+        if not google:
+            print("[report] nessuna metrica Google trovata nel Summary di Triple Whale.")
+            return None, 0.0
+
+        computed = compute_google_metrics(day, google)
+        if persist and store is not None:
+            store.upsert_google_daily(computed)
+        return computed.as_db_row(), computed.spend
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] pull Google (Triple Whale) saltata: {exc}")
+        return None, 0.0
+
+
 def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool, force: bool = False):
     """
     Restituisce (klaviyo_daily_dict | None, klaviyo_campaigns: list[dict]).
@@ -271,6 +323,7 @@ def format_report(
     klaviyo_campaigns: Optional[list[dict]] = None,
     tiktok_daily: Optional[dict] = None,
     tiktok_campaigns: Optional[list[dict]] = None,
+    google_daily: Optional[dict] = None,
 ) -> str:
     """Formatta il report Telegram (Markdown). Tutti i valori in USD."""
     fixed_line = ""
@@ -279,7 +332,7 @@ def format_report(
 
     ads_line = ""
     if m.ads_spend > 0:
-        ads_line = f"   • Ad spend (Meta + TikTok): −${m.ads_spend:,.2f}\n"
+        ads_line = f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}\n"
 
     report = (
         f"📊 *Daily report — {m.day}*\n"
@@ -299,8 +352,33 @@ def format_report(
     )
     report += _format_meta_section(meta_daily, meta_campaigns)
     report += _format_tiktok_section(tiktok_daily, tiktok_campaigns)
+    report += _format_google_section(google_daily)
     report += _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
     return report
+
+
+def _format_google_section(google_daily: Optional[dict]) -> str:
+    """Sezione Google Ads: totali account (USD). Nessun breakdown per campagna (per ora)."""
+    if not google_daily:
+        if settings.TRIPLEWHALE_API_KEY:
+            return "\n🔎 *Google Ads*: data not available for this day.\n"
+        return ""
+
+    spend = float(google_daily.get("spend") or 0)
+    revenue = float(google_daily.get("revenue") or 0)
+    orders = int(google_daily.get("orders") or 0)
+    roas = float(google_daily.get("roas") or 0)
+    cpa = float(google_daily.get("cpa") or 0)
+
+    out = (
+        f"\n🔎 *Google Ads — {google_daily.get('day')}* _(USD, via Triple Whale)_\n"
+        f"   • Spend: *${spend:,.2f}*\n"
+        f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
+        f"   • Attributed revenue: ${revenue:,.2f}\n"
+    )
+    if orders > 0:
+        out += f"   • CPA: ${cpa:,.2f} · conversions: {orders}\n"
+    return out
 
 
 def _format_tiktok_section(

@@ -261,3 +261,51 @@ def triplewhale_diagnostic() -> str:
             out.append(f"❌ call FAILED: {exc}")
 
     return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)
+
+
+def google_diagnostic() -> str:
+    """
+    Diagnostica LIVE Google Ads (sola lettura, via Triple Whale Summary): metriche
+    Google calcolate per ieri e gli ultimi 7 giorni (spend/ROAS/CPA/clicks/impr/conv).
+    La API key non è MAI esposta (mascherata + rimossa dall'output).
+    """
+    out: list[str] = []
+    out.append("🔎 Google Ads diagnostic (read-only, via Triple Whale)")
+    out.append(
+        f"Key: {_mask(settings.TRIPLEWHALE_API_KEY)} · base: {settings.TRIPLEWHALE_API_BASE} · "
+        f"path: {settings.TRIPLEWHALE_SUMMARY_PATH}"
+    )
+    if not settings.TRIPLEWHALE_API_KEY:
+        out.append("\n❌ TRIPLEWHALE_API_KEY not set in this environment.")
+        return "\n".join(out)
+
+    from src.connectors.triplewhale import TripleWhaleConnector, extract_google
+    from src.metrics.google import compute_google_metrics
+
+    tw = TripleWhaleConnector()
+    out.append(f"shopDomain used: {tw.shop_domain or '(EMPTY!)'}")
+
+    tz = pytz.timezone(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    since7 = (today - timedelta(days=7)).isoformat()
+
+    for label, start, end in (
+        ("yesterday", yesterday, yesterday),
+        ("last 7 days", since7, (today - timedelta(days=1)).isoformat()),
+    ):
+        out.append(f"\n— Google {label} ({start} → {end}) —")
+        try:
+            summary = tw.get_summary(start, end)
+            g = extract_google(summary)
+            if not g:
+                out.append("⚠️ No Google metrics found in the Summary response.")
+                continue
+            c = compute_google_metrics(label, g)
+            out.append(f"✅ Spend: ${c.spend:,.2f} · ROAS: {c.roas:,.2f}x")
+            out.append(f"Revenue: ${c.revenue:,.2f} · conversions: {c.orders} · CPA: ${c.cpa:,.2f}")
+            out.append(f"Impressions: {c.impressions:,} · Clicks: {c.clicks:,}")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"❌ call FAILED: {exc}")
+
+    return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)

@@ -95,6 +95,11 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 > riusa dalla cache DB (1 sola chiamata Triple Whale al giorno). La spesa TikTok viene
 > sottratta dal net profit (come Meta). Diagnostica: comando `/tw_check`.
 
+> **Google Ads via Triple Whale (Fase 2):** esegui anche `supabase/migrations/005_google.sql`
+> (tabella `google_daily`, solo totali account — no per-campaign per ora). Usa la stessa
+> `TRIPLEWHALE_API_KEY`. La spesa Google viene sottratta dal net profit. Diagnostica:
+> comando `/google_check`.
+
 > 🔒 Non committare mai questi valori: vivono solo nelle Variables di Railway (e nel tuo `.env` locale).
 
 ---

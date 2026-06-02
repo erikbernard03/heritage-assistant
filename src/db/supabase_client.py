@@ -307,6 +307,33 @@ class SupabaseStore:
         )
         return res.data or []
 
+    # --------------------------------------------------------- Google (Fase 2)
+    def upsert_google_daily(self, g) -> None:
+        """Upsert dei totali Google giornalieri (chiave = day)."""
+        self.client.table("google_daily").upsert(g.as_db_row()).execute()
+
+    def get_google_daily_for_day(self, day: str) -> Optional[dict]:
+        """Totali Google per un giorno, se presenti (cache 1-call/giorno)."""
+        res = (
+            self.client.table("google_daily")
+            .select("*")
+            .eq("day", day)
+            .limit(1)
+            .execute()
+        )
+        return (res.data or [None])[0]
+
+    def get_recent_google_daily(self, days: int = 14) -> list[dict]:
+        """Ultime N righe di google_daily (più recenti prima)."""
+        res = (
+            self.client.table("google_daily")
+            .select("*")
+            .order("day", desc=True)
+            .limit(days)
+            .execute()
+        )
+        return res.data or []
+
 
 def _num(value) -> float:
     try:

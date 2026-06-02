@@ -201,3 +201,46 @@ def extract_tiktok(summary: dict) -> Optional[dict]:
         "orders": orders,                  # 0 se non presente -> CPA saltato
         "campaigns": [],                   # nessun breakdown per campagna nel Summary
     }
+
+
+# --------------------------------------------------------------------------- #
+# Estrazione GOOGLE ADS dai metric tile del Summary (stesso pattern di TikTok).
+# Valori già in USD. Solo totali account (no per-campaign: arriverà via Google Ads
+# API quando il developer token sarà approvato).
+# --------------------------------------------------------------------------- #
+GOOGLE_METRIC_IDS = {
+    "spend": "ga_adCost",
+    "roas": "ga_ROAS",
+    "cpa": "googleCpa",
+    "clicks": "totalGoogleAdsClicks",
+    "impressions": "totalGoogleAdsImpressions",
+    "orders": "ga_all_transactions_adGroup",
+    "revenue": "ga_all_transactionsRevenue_adGroup",
+}
+_GOOGLE_CPA_ALT = "googleAllCpa"
+
+
+def extract_google(summary: dict) -> Optional[dict]:
+    """
+    Estrae i valori Google Ads (già in USD) dai metric tile del Summary, leggendo
+    values.current per ciascun metricId. Ritorna None se non c'è alcuna metrica Google.
+    Solo totali a livello account (nessun breakdown per campagna nel Summary).
+    """
+    vals = collect_metric_values(summary)
+    if not any(mid in vals for mid in GOOGLE_METRIC_IDS.values()):
+        return None
+
+    cpa = _num(vals.get(GOOGLE_METRIC_IDS["cpa"]))
+    if not cpa:
+        cpa = _num(vals.get(_GOOGLE_CPA_ALT))
+
+    return {
+        "currency": "USD",            # già USD: nessuna conversione
+        "spend": _num(vals.get(GOOGLE_METRIC_IDS["spend"])),
+        "revenue": _num(vals.get(GOOGLE_METRIC_IDS["revenue"])),
+        "orders": _num(vals.get(GOOGLE_METRIC_IDS["orders"])),
+        "clicks": _num(vals.get(GOOGLE_METRIC_IDS["clicks"])),
+        "impressions": _num(vals.get(GOOGLE_METRIC_IDS["impressions"])),
+        "roas": _num(vals.get(GOOGLE_METRIC_IDS["roas"])),  # se 0 -> ricalcolato
+        "cpa": cpa,                                          # se 0 -> ricalcolato
+    }

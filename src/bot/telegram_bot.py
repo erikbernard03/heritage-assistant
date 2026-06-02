@@ -155,6 +155,25 @@ async def cmd_tw_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.edit_text(f"❌ Triple Whale diagnostic error: {exc}")
 
 
+async def cmd_google_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/google_check (admin) -> diagnostica live Google (via Triple Whale) in chat."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+
+    msg = await update.message.reply_text("⏳ Running Google Ads diagnostic…")
+    try:
+        from src.diagnostics import google_diagnostic
+
+        text = await asyncio.to_thread(google_diagnostic)
+        await msg.edit_text(text[:3800])
+        if len(text) > 3800:
+            await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nella diagnostica Google")
+        await msg.edit_text(f"❌ Google diagnostic error: {exc}")
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Messaggi liberi -> risposta AI (Claude legge i dati dal DB)."""
     if not _authorized(update):
@@ -184,6 +203,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("klaviyo_check", cmd_klaviyo_check))
     app.add_handler(CommandHandler("meta_check", cmd_meta_check))
     app.add_handler(CommandHandler("tw_check", cmd_tw_check))
+    app.add_handler(CommandHandler("google_check", cmd_google_check))
     # qualsiasi testo non-comando -> assistente AI
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     return app
