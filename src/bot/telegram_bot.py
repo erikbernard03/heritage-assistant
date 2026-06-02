@@ -174,6 +174,31 @@ async def cmd_google_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await msg.edit_text(f"❌ Google diagnostic error: {exc}")
 
 
+async def cmd_refresh_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/refresh_today (admin) -> force re-pull di tutte le piattaforme (oggi + ieri),
+    sovrascrive le righe DB e reinvia il report aggiornato di ieri."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+
+    msg = await update.message.reply_text(
+        "⏳ Force-refreshing all platforms for today & yesterday (overwriting DB)…"
+    )
+    try:
+        from src.report import refresh_today_and_yesterday
+
+        text = await asyncio.to_thread(refresh_today_and_yesterday)
+        try:
+            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:  # noqa: BLE001 — troppo lungo o markdown non valido
+            await msg.edit_text(text[:3800])
+            if len(text) > 3800:
+                await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nel refresh_today")
+        await msg.edit_text(f"❌ Refresh error: {exc}")
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Messaggi liberi -> risposta AI (Claude legge i dati dal DB)."""
     if not _authorized(update):
@@ -204,6 +229,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("meta_check", cmd_meta_check))
     app.add_handler(CommandHandler("tw_check", cmd_tw_check))
     app.add_handler(CommandHandler("google_check", cmd_google_check))
+    app.add_handler(CommandHandler("refresh_today", cmd_refresh_today))
     # qualsiasi testo non-comando -> assistente AI
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     return app

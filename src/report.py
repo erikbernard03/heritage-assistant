@@ -32,20 +32,42 @@ class DayWindow:
     end: datetime           # fine giorno (esclusiva), tz-aware
 
 
+def day_window(target_date) -> DayWindow:
+    """Intervallo [00:00, 24:00) di un giorno specifico in Europe/Rome, tz-aware."""
+    tz = pytz.timezone(settings.TIMEZONE)
+    start = tz.localize(datetime.combine(target_date, time.min))
+    end = start + timedelta(days=1)
+    return DayWindow(day_str=target_date.isoformat(), start=start, end=end)
+
+
 def yesterday_window(now: Optional[datetime] = None) -> DayWindow:
     """Intervallo [00:00, 24:00) di IERI in Europe/Rome, tz-aware."""
     tz = pytz.timezone(settings.TIMEZONE)
     now = now.astimezone(tz) if now else datetime.now(tz)
-    yesterday = (now - timedelta(days=1)).date()
-    start = tz.localize(datetime.combine(yesterday, time.min))
-    end = start + timedelta(days=1)
-    return DayWindow(day_str=yesterday.isoformat(), start=start, end=end)
+    return day_window((now - timedelta(days=1)).date())
+
+
+def refresh_today_and_yesterday() -> str:
+    """
+    Force re-pull di TUTTE le piattaforme per OGGI e IERI, sovrascrive le righe DB,
+    e ritorna il report (di IERI, quello canonico) già rigenerato e aggiornato.
+    """
+    tz = pytz.timezone(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    yesterday = today - timedelta(days=1)
+    # IERI: report canonico (ritornato per l'invio)
+    _, y_text = build_daily_report(window=day_window(yesterday), persist=True)
+    # OGGI: aggiorna le righe del giorno corrente (parziale) nel DB
+    try:
+        build_daily_report(window=day_window(today), persist=True)
+    except Exception as exc:  # noqa: BLE001 — non bloccare l'invio del report di ieri
+        print(f"[refresh] refresh di oggi saltato: {exc}")
+    return y_text
 
 
 def build_daily_report(
     window: Optional[DayWindow] = None,
     persist: bool = True,
-    force_meta: bool = False,
 ) -> tuple[DailyMetrics, str]:
     """Costruisce le metriche + il testo del report per la finestra indicata (default: ieri)."""
     window = window or yesterday_window()
@@ -63,25 +85,28 @@ def build_daily_report(
     for o in orders:
         o["_day_rome"] = window.day_str
 
-    # Meta (Fase 2): una sola pull insights/giorno (cache su DB); spesa in USD.
-    meta_daily, meta_campaigns, meta_spend = _load_meta(
-        window.day_str, persist=persist, force=force_meta
-    )
+    # Cache PER-RUN del Summary Triple Whale: TikTok e Google leggono lo stesso
+    # Summary, quindi nello stesso run si fa UNA sola chiamata. La cache vive solo
+    # per questa esecuzione (non tra run diversi), così i dati vengono sempre
+    # ri-tirati e le righe del giorno SOVRASCRITTE ad ogni run.
+    tw_cache: dict = {}
 
-    # TikTok via Triple Whale (Fase 3): una sola pull Summary/giorno (cache su DB);
-    # SOLO TikTok. La spesa è un costo reale e va sottratta dal net profit (come Meta).
+    # Meta (Fase 2): pull insights del giorno; spesa in USD. Sempre UPSERT (overwrite).
+    meta_daily, meta_campaigns, meta_spend = _load_meta(window.day_str, persist=persist)
+
+    # TikTok via Triple Whale (Fase 3): SOLO TikTok. Spesa sottratta dal net profit.
     tiktok_daily, tiktok_campaigns, tiktok_spend = _load_tiktok(
-        window.day_str, window.start.date().isoformat(), window.day_str, persist=persist
+        window.day_str, window.start.date().isoformat(), window.day_str,
+        persist=persist, summary_cache=tw_cache,
     )
 
-    # Google Ads via Triple Whale (Fase 2): una sola pull Summary/giorno (cache su DB);
-    # SOLO totali account. Anche questa spesa è un costo reale (sottratta dal net profit).
+    # Google Ads via Triple Whale (Fase 2): SOLO totali account. Spesa nel net profit.
     google_daily, google_spend = _load_google(
-        window.day_str, window.start.date().isoformat(), window.day_str, persist=persist
+        window.day_str, window.start.date().isoformat(), window.day_str,
+        persist=persist, summary_cache=tw_cache,
     )
 
-    # Klaviyo (Fase 4): una sola pull reporting/giorno (cache su DB); SOLO campagne.
-    # È revenue attribuita (informativa): NON entra nel net profit.
+    # Klaviyo (Fase 4): SOLO campagne; revenue attribuita (NON entra nel net profit).
     klaviyo_daily, klaviyo_campaigns = _load_klaviyo(
         window.day_str, window.start.isoformat(), window.end.isoformat(), persist=persist
     )
@@ -103,14 +128,13 @@ def build_daily_report(
     )
 
 
-def _load_meta(day: str, persist: bool, force: bool = False):
+def _load_meta(day: str, persist: bool):
     """
     Restituisce (meta_daily_dict | None, meta_campaigns: list[dict], meta_spend_usd).
 
-    Regola anti-ban: UNA pull insights al giorno. Se i dati del giorno sono già nel
-    database, vengono riusati senza chiamare l'API Meta (i /report manuali non
-    generano nuove chiamate). Se Meta non è configurato o fallisce, il report
-    prosegue comunque in modalità solo-Shopify (meta_spend = 0).
+    Una pull insights per run (Meta) e SEMPRE upsert: la riga del giorno viene
+    sovrascritta ad ogni esecuzione (così i dati restano aggiornati). Se Meta non è
+    configurato o fallisce, il report prosegue in modalità solo-Shopify (spend=0).
     """
     if not (settings.META_ACCESS_TOKEN and settings.META_AD_ACCOUNT_ID):
         return None, [], 0.0
@@ -123,14 +147,6 @@ def _load_meta(day: str, persist: bool, force: bool = False):
     except Exception as exc:  # noqa: BLE001
         print(f"[report] Supabase non disponibile per Meta: {exc}")
 
-    # 1) prova la cache su DB (evita una nuova chiamata API)
-    if store is not None and not force:
-        cached = store.get_meta_daily_for_day(day)
-        if cached:
-            campaigns = store.get_meta_campaigns_for_day(day)
-            return cached, campaigns, float(cached.get("spend") or 0.0)
-
-    # 2) nessuna cache: UNA pull insights dal connettore Meta
     try:
         from src.connectors.meta import MetaConnector
         from src.metrics.meta import compute_meta_metrics
@@ -152,13 +168,25 @@ def _load_meta(day: str, persist: bool, force: bool = False):
         return None, [], 0.0
 
 
-def _load_tiktok(day: str, start: str, end: str, persist: bool, force: bool = False):
+def _tw_summary(start: str, end: str, summary_cache: Optional[dict]) -> dict:
+    """Pull del Summary Triple Whale, deduplicata SOLO entro lo stesso run (summary_cache)."""
+    from src.connectors.triplewhale import TripleWhaleConnector
+
+    if summary_cache is not None and (start, end) in summary_cache:
+        return summary_cache[(start, end)]
+    summary = TripleWhaleConnector().get_summary(start, end)
+    if summary_cache is not None:
+        summary_cache[(start, end)] = summary
+    return summary
+
+
+def _load_tiktok(day: str, start: str, end: str, persist: bool, summary_cache=None):
     """
     Restituisce (tiktok_daily_dict | None, tiktok_campaigns: list[dict], tiktok_spend_usd).
 
-    Stessa regola di Meta/Klaviyo: UNA pull Summary al giorno, con cache su DB. Estrae
-    SOLO TikTok. Se Triple Whale non è configurato o fallisce, il report prosegue
-    comunque (tiktok_spend = 0). `start`/`end` sono date YYYY-MM-DD.
+    SOLO TikTok. SEMPRE upsert: la riga del giorno viene sovrascritta ad ogni run.
+    `summary_cache` deduplica la chiamata Summary con Google entro lo STESSO run.
+    Se Triple Whale non è configurato o fallisce, il report prosegue (spend=0).
     """
     if not settings.TRIPLEWHALE_API_KEY:
         return None, [], 0.0
@@ -171,20 +199,11 @@ def _load_tiktok(day: str, start: str, end: str, persist: bool, force: bool = Fa
     except Exception as exc:  # noqa: BLE001
         print(f"[report] Supabase non disponibile per TikTok: {exc}")
 
-    # 1) cache su DB (evita una nuova chiamata API)
-    if store is not None and not force:
-        cached = store.get_tiktok_daily_for_day(day)
-        if cached:
-            campaigns = store.get_tiktok_campaigns_for_day(day)
-            return cached, campaigns, float(cached.get("spend") or 0.0)
-
-    # 2) nessuna cache: UNA pull Summary + estrazione SOLO TikTok
     try:
-        from src.connectors.triplewhale import TripleWhaleConnector, extract_tiktok
+        from src.connectors.triplewhale import extract_tiktok
         from src.metrics.tiktok import compute_tiktok_metrics
 
-        tw = TripleWhaleConnector()
-        summary = tw.get_summary(start, end)
+        summary = _tw_summary(start, end, summary_cache)
         tiktok = extract_tiktok(summary)
         if not tiktok:
             print("[report] nessun canale TikTok trovato nel Summary di Triple Whale.")
@@ -205,13 +224,13 @@ def _load_tiktok(day: str, start: str, end: str, persist: bool, force: bool = Fa
         return None, [], 0.0
 
 
-def _load_google(day: str, start: str, end: str, persist: bool, force: bool = False):
+def _load_google(day: str, start: str, end: str, persist: bool, summary_cache=None):
     """
     Restituisce (google_daily_dict | None, google_spend_usd).
 
-    Stessa regola di TikTok: UNA pull Summary al giorno, con cache su DB. Estrae SOLO
-    i totali Google (no per-campaign). Se Triple Whale non è configurato o fallisce,
-    il report prosegue (google_spend = 0). `start`/`end` sono date YYYY-MM-DD.
+    SOLO totali Google (no per-campaign). SEMPRE upsert: la riga del giorno viene
+    sovrascritta ad ogni run. `summary_cache` riusa il Summary già tirato da TikTok
+    nello STESSO run. Se Triple Whale non è configurato/fallisce, prosegue (spend=0).
     """
     if not settings.TRIPLEWHALE_API_KEY:
         return None, 0.0
@@ -224,23 +243,11 @@ def _load_google(day: str, start: str, end: str, persist: bool, force: bool = Fa
     except Exception as exc:  # noqa: BLE001
         print(f"[report] Supabase non disponibile per Google: {exc}")
 
-    # 1) cache su DB (evita una nuova chiamata API)
-    if store is not None and not force:
-        cached = store.get_google_daily_for_day(day)
-        if cached:
-            return cached, float(cached.get("spend") or 0.0)
-
-    # 2) nessuna cache: UNA pull Summary + estrazione Google + CVR di negozio
     try:
-        from src.connectors.triplewhale import (
-            TripleWhaleConnector,
-            extract_google,
-            extract_store_cvr,
-        )
+        from src.connectors.triplewhale import extract_google, extract_store_cvr
         from src.metrics.google import compute_google_metrics
 
-        tw = TripleWhaleConnector()
-        summary = tw.get_summary(start, end)
+        summary = _tw_summary(start, end, summary_cache)
         google = extract_google(summary)
         cvr = extract_store_cvr(summary)
         if not google and cvr is None:
@@ -257,13 +264,12 @@ def _load_google(day: str, start: str, end: str, persist: bool, force: bool = Fa
         return None, 0.0
 
 
-def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool, force: bool = False):
+def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool):
     """
     Restituisce (klaviyo_daily_dict | None, klaviyo_campaigns: list[dict]).
 
-    SOLO CAMPAGNE (no flows). Stessa regola di Meta: UNA pull reporting al giorno,
-    con cache su DB. Se Klaviyo non è configurato o fallisce, il report prosegue
-    comunque senza la sezione Klaviyo.
+    SOLO CAMPAGNE (no flows). SEMPRE upsert: la riga del giorno viene sovrascritta ad
+    ogni run. Se Klaviyo non è configurato o fallisce, il report prosegue senza la sezione.
     """
     if not settings.KLAVIYO_API_KEY:
         return None, []
@@ -276,13 +282,6 @@ def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool, force: 
     except Exception as exc:  # noqa: BLE001
         print(f"[report] Supabase non disponibile per Klaviyo: {exc}")
 
-    # 1) cache su DB (evita una nuova chiamata API)
-    if store is not None and not force:
-        cached = store.get_klaviyo_daily_for_day(day)
-        if cached:
-            return cached, store.get_klaviyo_campaigns_for_day(day)
-
-    # 2) nessuna cache: UNA pull reporting (campaign-values-report)
     try:
         from src.connectors.klaviyo import KlaviyoConnector
         from src.metrics.klaviyo import compute_klaviyo_metrics
