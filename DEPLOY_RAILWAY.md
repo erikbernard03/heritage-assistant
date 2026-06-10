@@ -21,26 +21,28 @@ Entrambi usano lo stesso codice; cambia solo lo **Start Command** (e, per il cro
 2. Quando chiede il branch, seleziona **`claude/compassionate-lamport-JC2dT`**
    (Service → **Settings → Source → Branch**).
 3. Rinomina il servizio in **`bot`** (Settings → Service Name).
-4. **Settings → Deploy → Start Command**:
-   ```
-   python -m src.bot.telegram_bot
-   ```
-5. **Settings → Deploy → Restart Policy**: `On Failure` (il bot deve restare su).
+4. **Settings → Config-as-code → Railway Config File**: `railway.bot.json`
+   (definisce già lo Start Command `python -m src.bot.telegram_bot`, 1 replica, restart On-Failure).
+5. **Settings → Build → Custom Build Command**: lascialo **VUOTO** (Nixpacks builda da
+   `requirements.txt`). ⚠️ Il Build Command NON deve mai essere uguale allo Start Command,
+   altrimenti il deploy fallisce con *"buildCommand and startCommand cannot be the same"*.
 6. *(Lascia il servizio senza dominio pubblico: è un worker, non serve HTTP.)*
+
+> Se non usi il config file, in alternativa: **Settings → Deploy → Start Command** =
+> `python -m src.bot.telegram_bot`, **Replicas = 1**, e **Build Command vuoto**.
 
 ## 2. Aggiungi il secondo servizio (CRON)
 1. Nello **stesso progetto** → **+ New** → **GitHub Repo** → di nuovo `heritage-assistant`
    (stesso repo, stesso branch). Così hai due servizi nello stesso progetto.
 2. Rinomina il servizio in **`cron`**.
-3. **Settings → Deploy → Start Command**:
-   ```
-   python -m src.run_daily
-   ```
-4. **Settings → Deploy → Cron Schedule**:
-   ```
-   0 22,23 * * *
-   ```
-5. **Settings → Deploy → Restart Policy**: `Never` (un cron deve girare ed uscire, non riavviarsi).
+3. **Settings → Config-as-code → Railway Config File**: `railway.cron.json`
+   (definisce Start Command `python -m src.run_daily`, Cron `0 22,23 * * *`, restart Never).
+4. **Settings → Build → Custom Build Command**: **VUOTO**. ⚠️ NON impostare qui
+   `python -m src.run_daily`: il Build Command uguale allo Start Command fa fallire il deploy
+   (*"buildCommand and startCommand cannot be the same"*).
+5. Verifica che lo **Start Command** del cron sia `python -m src.run_daily` e **non** quello
+   del bot: il cron NON deve mai avviare il polling Telegram (altrimenti due istanze del bot
+   in `getUpdates` → errore *Conflict: terminated by other getUpdates request*).
 
 > ### Perché `0 22,23 * * *` e non `0 0 * * *`?
 > Il cron di Railway è in **UTC** e **non** gestisce l'ora legale. Roma è UTC+1 (inverno)
@@ -117,7 +119,17 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 ---
 
 ## Riepilogo comandi/valori
-- Start command **bot**: `python -m src.bot.telegram_bot`
-- Start command **cron**: `python -m src.run_daily`
-- Cron Schedule (UTC): `0 22,23 * * *`
+- Config file **bot**: `railway.bot.json` · Start: `python -m src.bot.telegram_bot` · Replicas: 1
+- Config file **cron**: `railway.cron.json` · Start: `python -m src.run_daily` · Cron: `0 22,23 * * *`
+- Build Command: **VUOTO** su entrambi (Nixpacks builda da `requirements.txt`)
 - Guardia mezzanotte Roma: `RAILWAY_CRON_GUARD=1` (solo sul cron)
+
+## Troubleshooting
+- **"buildCommand and startCommand cannot be the same"** → sul servizio hai un **Build
+  Command** uguale allo **Start Command**. Svuota il Build Command (Settings → Build) e
+  tieni solo lo Start Command (o usa i config file `railway.*.json` che non hanno buildCommand).
+- **"Conflict: terminated by other getUpdates request"** → ci sono **due istanze del bot**
+  in polling. Verifica che: (a) il servizio `bot` abbia **Replicas = 1**; (b) il servizio
+  `cron` usi `python -m src.run_daily` e **non** il comando del bot. `run_daily` invia il
+  report via HTTP (`sendMessage`) e **non** avvia mai il polling, quindi il conflitto nasce
+  solo da una mis-configurazione del comando di avvio o da repliche multiple.
