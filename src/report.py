@@ -119,10 +119,31 @@ def build_daily_report(
     if persist:
         _persist(orders, handle_map, metrics)
 
+    # Break-even ROAS/CPA dalla media dei 4 giorni PRECEDENTI (da daily_metrics).
+    breakeven = _load_breakeven(window.day_str)
+
     return metrics, format_report(
         metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
-        tiktok_daily, tiktok_campaigns, google_daily,
+        tiktok_daily, tiktok_campaigns, google_daily, breakeven=breakeven,
     )
+
+
+def _load_breakeven(day: str):
+    """Legge i 4 giorni precedenti da daily_metrics e calcola (break-even ROAS, CPA)."""
+    try:
+        from datetime import date as _date, timedelta as _td
+
+        from src.db.supabase_client import SupabaseStore
+        from src.metrics.profit import compute_breakeven
+
+        d = _date.fromisoformat(day)
+        start = (d - _td(days=4)).isoformat()   # 4 giorni precedenti
+        end = (d - _td(days=1)).isoformat()
+        rows = SupabaseStore().get_daily_metrics_range(start, end)
+        return compute_breakeven(rows)
+    except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
+        print(f"[report] break-even non calcolato: {exc}")
+        return None, None
 
 
 def _load_meta(day: str, persist: bool):
@@ -327,6 +348,14 @@ def _fmt_cvr(google_daily: Optional[dict]) -> str:
     return "n/a"
 
 
+def _breakeven_line(breakeven: Optional[tuple]) -> str:
+    """Riga break-even ROAS/CPA (media 4 giorni). 'n/a' se non calcolabile."""
+    be_roas, be_cpa = (breakeven or (None, None))
+    roas_s = f"{be_roas:,.2f}x" if be_roas else "n/a"
+    cpa_s = f"${be_cpa:,.2f}" if be_cpa is not None else "n/a"
+    return f"⚖️ Break-even ROAS: {roas_s} · Break-even CPA: {cpa_s} (4-day avg)"
+
+
 def _roas_cpa_line(emoji: str, name: str, daily: Optional[dict]) -> Optional[str]:
     """Riga compatta ROAS/CPA per la Sezione 1 (None se la piattaforma non ha dati)."""
     if not daily:
@@ -347,10 +376,11 @@ def format_report(
     tiktok_daily: Optional[dict] = None,
     tiktok_campaigns: Optional[list[dict]] = None,
     google_daily: Optional[dict] = None,
+    breakeven: Optional[tuple] = None,
 ) -> str:
     """
     Report Telegram in 3 sezioni (Markdown, tutto in USD):
-      1) KEY METRICS  2) COST BREAKDOWN  3) PER-PLATFORM AD BREAKDOWN
+      1) KEY METRICS  2) INCOME & COSTS  3) PER-PLATFORM AD BREAKDOWN
     Tutti i numeri sono deterministici (nessun LLM).
     """
     out: list[str] = [f"📊 *Daily report — {m.day}* _(USD)_"]
@@ -365,6 +395,7 @@ def format_report(
     out.append(f"🛒 Orders: *{m.num_orders}*")
     out.append(f"🧾 AOV: ${m.aov:,.2f}")
     out.append(f"📈 Store CVR: {_fmt_cvr(google_daily)}")
+    out.append(_breakeven_line(breakeven))
     for line in (
         _roas_cpa_line("📣", "Meta", meta_daily),
         _roas_cpa_line("🎵", "TikTok", tiktok_daily),
@@ -376,10 +407,15 @@ def format_report(
         kla_rev = float(klaviyo_daily.get("revenue") or 0)
         out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
 
-    # ---- SEZIONE 2 — COST BREAKDOWN -----------------------------------------
-    out.append("\n*2) COST BREAKDOWN*")
+    # ---- SEZIONE 2 — INCOME & COSTS -----------------------------------------
+    out.append("\n*2) INCOME & COSTS*")
+    out.append("_Income (already part of Revenue):_")
+    out.append(f"   • Product revenue: ${m.product_revenue:,.2f}")
+    out.append(f"   • Premium shipping collected: +${m.shipping_collected:,.2f}")
+    out.append(f"   • VAT collected: +${m.tax_collected:,.2f}")
+    out.append("_Costs:_")
     out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
-    out.append(f"   • Shipping ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
+    out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
     out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
     if m.ads_spend > 0:
         out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")

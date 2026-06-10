@@ -34,6 +34,24 @@ def _is_cancelled(order: dict) -> bool:
     return bool(order.get("cancelled_at"))
 
 
+def _order_shipping_collected(order: dict) -> float:
+    """Spedizione CARICATA al cliente (income). total_shipping_price_set, fallback shipping_lines."""
+    s = order.get("total_shipping_price_set")
+    if isinstance(s, dict):
+        amt = (s.get("shop_money") or {}).get("amount")
+        if amt is not None:
+            return _to_float(amt)
+    total = 0.0
+    for line in order.get("shipping_lines") or []:
+        total += _to_float(line.get("price"))
+    return total
+
+
+def _order_tax_collected(order: dict) -> float:
+    """IVA/tasse incassate dal cliente (income)."""
+    return _to_float(order.get("total_tax"))
+
+
 @dataclass
 class LineItemCost:
     order_id: int
@@ -60,7 +78,15 @@ class DailyMetrics:
     net_profit_operativo: float = 0.0   # senza costi fissi
     net_profit_netto: float = 0.0       # con costi fissi
     aov: float = 0.0
+    # Income già INCLUSO in `revenue` (total_price), separato per visibilità (no double count):
+    shipping_collected: float = 0.0     # spedizione premium pagata dal cliente
+    tax_collected: float = 0.0          # IVA/tasse incassate
     line_items: list[LineItemCost] = field(default_factory=list)
+
+    @property
+    def product_revenue(self) -> float:
+        """Revenue di solo prodotto = total_price − spedizione incassata − IVA incassata."""
+        return self.revenue - self.shipping_collected - self.tax_collected
 
     def as_db_row(self) -> dict:
         """Riga per la tabella daily_metrics (tutto in USD)."""
@@ -104,6 +130,9 @@ def compute_daily_metrics(
         order_id = int(order.get("id", 0))
         revenue = _to_float(order.get("total_price"))
         m.revenue += revenue
+        # spedizione + IVA sono GIÀ dentro total_price: le separiamo solo per mostrarle
+        m.shipping_collected += _order_shipping_collected(order)
+        m.tax_collected += _order_tax_collected(order)
         m.num_orders += 1
 
         for li in order.get("line_items", []):
@@ -144,3 +173,35 @@ def compute_daily_metrics(
     m.aov = (m.revenue / m.num_orders) if m.num_orders else 0.0
 
     return m
+
+
+def compute_breakeven(prev_days_rows: list[dict]) -> tuple[Optional[float], Optional[float]]:
+    """
+    Break-even ROAS e CPA dalla MEDIA degli ultimi N giorni (codice puro, deterministico).
+
+    Usa l'aggregato (somma) dei giorni passati forniti:
+      avg_AOV          = somma(revenue) / somma(ordini)
+      avg_COGS/ordine  = somma(cogs)    / somma(ordini)
+      break-even ROAS  = avg_AOV / (avg_AOV − avg_COGS/ordine)
+      break-even CPA   = avg_AOV − avg_COGS/ordine − fee/ordine(7.5%·AOV) − spedizione($7)
+
+    Ritorna (None, None) se non ci sono ordini sufficienti / margine non positivo.
+    """
+    total_rev = sum(_to_float(r.get("revenue")) for r in prev_days_rows)
+    total_orders = sum(int(r.get("num_orders") or 0) for r in prev_days_rows)
+    total_cogs = sum(_to_float(r.get("cogs_total")) for r in prev_days_rows)
+    if total_orders <= 0:
+        return None, None
+
+    avg_aov = total_rev / total_orders
+    avg_cogs_per_order = total_cogs / total_orders
+    contribution = avg_aov - avg_cogs_per_order
+
+    be_roas = (avg_aov / contribution) if contribution > 0 else None
+    be_cpa = (
+        avg_aov
+        - avg_cogs_per_order
+        - settings.FEE_PAGAMENTI * avg_aov
+        - settings.SPEDIZIONE_PER_ORDINE
+    )
+    return be_roas, be_cpa
