@@ -184,8 +184,10 @@ def compute_breakeven(prev_days_rows: list[dict]) -> tuple[Optional[float], Opti
     Usa l'aggregato (somma) dei giorni passati forniti:
       avg_AOV          = somma(revenue) / somma(ordini)
       avg_COGS/ordine  = somma(cogs)    / somma(ordini)
-      break-even ROAS  = avg_AOV / (avg_AOV − avg_COGS/ordine)
-      break-even CPA   = avg_AOV − avg_COGS/ordine − fee/ordine(7.5%·AOV) − spedizione($7)
+      contrib/ordine   = avg_AOV − avg_COGS/ordine − fee/ordine(7.5%·AOV) − spedizione($7)
+      break-even CPA   = contrib/ordine  (massimo CPA per andare in pari)
+      break-even ROAS  = avg_AOV / contrib/ordine
+      (la contribuzione sottrae COGS + fee pagamenti + spedizione: dà ~1.58x reale)
 
     Ritorna (None, None) se non ci sono ordini sufficienti / margine non positivo.
     """
@@ -197,13 +199,13 @@ def compute_breakeven(prev_days_rows: list[dict]) -> tuple[Optional[float], Opti
 
     avg_aov = total_rev / total_orders
     avg_cogs_per_order = total_cogs / total_orders
-    contribution = avg_aov - avg_cogs_per_order
-
-    be_roas = (avg_aov / contribution) if contribution > 0 else None
+    # Contribuzione per ordine al netto dei costi VARIABILI (COGS + fee + spedizione).
+    # È anche il break-even CPA: il massimo che possiamo pagare per ordine per andare in pari.
     be_cpa = (
         avg_aov
         - avg_cogs_per_order
         - settings.FEE_PAGAMENTI * avg_aov
         - settings.SPEDIZIONE_PER_ORDINE
     )
+    be_roas = (avg_aov / be_cpa) if be_cpa > 0 else None
     return be_roas, be_cpa

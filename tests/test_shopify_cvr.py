@@ -54,3 +54,17 @@ def test_report_store_cvr_comes_from_metrics():
     # se 0 -> n/a
     m2 = DailyMetrics(day="2026-05-31", store_cvr=0.0)
     assert "Store CVR: n/a" in format_report(m2)
+
+
+def test_report_has_no_separate_vat_or_shipping_income_lines():
+    """Le righe income separate sono state rimosse (no doppio conteggio visivo)."""
+    m = DailyMetrics(day="2026-05-31", num_orders=10, revenue=1000.0, aov=100.0,
+                     cogs_total=30.0, shipping_total=70.0, payment_fees=75.0,
+                     net_profit_operativo=825.0, net_profit_netto=636.07,
+                     shipping_collected=40.0, tax_collected=180.0)
+    text = format_report(m)
+    assert "VAT collected" not in text
+    assert "Premium shipping collected" not in text
+    assert "*2) COST BREAKDOWN*" in text
+    # revenue resta total_price (IVA+spedizione incluse una volta)
+    assert "Revenue: *$1,000.00*" in text

@@ -66,8 +66,8 @@ def test_cancelled_orders_excluded():
     assert m.revenue == 0.0
 
 
-def test_shipping_and_vat_income_split_no_double_count():
-    """FEATURE 2: spedizione+IVA estratte da total_price, NON aggiunte due volte."""
+def test_vat_and_shipping_counted_once_in_net_profit():
+    """IVA + spedizione sono dentro total_price -> contano UNA volta nel net profit."""
     handle_map = {222: "carnelian-signet-ring"}
     # total_price 60 = prodotto 50 + IVA 6 + spedizione 4
     order = {
@@ -78,15 +78,13 @@ def test_shipping_and_vat_income_split_no_double_count():
     }
     m = compute_daily_metrics("2026-05-29", [order], handle_map, resolver=RESOLVER)
 
-    assert m.revenue == 60.0                  # total_price invariato (include tutto)
-    assert m.shipping_collected == 4.0
-    assert m.tax_collected == 6.0
-    assert round(m.product_revenue, 2) == 50.0  # 60 − 4 − 6
-    # i 3 income sommano esattamente a revenue (no double count)
-    assert round(m.product_revenue + m.shipping_collected + m.tax_collected, 2) == 60.0
-    # net profit usa revenue=total_price: 60 − 3(COGS) − 7(ship cost) − 4.5(fee) = 45.5
+    assert m.revenue == 60.0                  # total_price invariato (include IVA+spedizione)
+    # net profit usa revenue=total_price UNA sola volta:
+    # 60 − 3(COGS) − 7(ship cost) − 4.5(fee) = 45.5  (IVA/spedizione NON aggiunte di nuovo)
     assert round(m.payment_fees, 2) == 4.5
     assert round(m.net_profit_operativo, 2) == 45.5
+    # i campi income (split) sommano esattamente a revenue -> nessun doppio conteggio
+    assert round(m.product_revenue + m.shipping_collected + m.tax_collected, 2) == 60.0
 
 
 def test_shipping_collected_fallback_to_shipping_lines():
@@ -111,10 +109,12 @@ def test_compute_breakeven_4day_avg():
         {"revenue": 100, "num_orders": 1, "cogs_total": 10},
     ]
     be_roas, be_cpa = compute_breakeven(rows)
-    # break-even ROAS = 100 / (100 - 10) = 1.1111
-    assert round(be_roas, 4) == round(100 / 90, 4)
-    # break-even CPA = 100 - 10 - 0.075*100 - 7 = 75.5
+    # break-even CPA = 100 - 10 - 0.075*100 - 7 = 75.5 (invariato)
     assert round(be_cpa, 2) == 75.5
+    # break-even ROAS ora sottrae COGS + fee + spedizione: 100 / 75.5
+    assert round(be_roas, 4) == round(100 / 75.5, 4)
+    # ROAS == AOV / CPA (coerenti)
+    assert round(be_roas, 6) == round(100 / be_cpa, 6)
 
 
 def test_compute_breakeven_insufficient_data():

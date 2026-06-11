@@ -426,13 +426,11 @@ def format_report(
         kla_rev = float(klaviyo_daily.get("revenue") or 0)
         out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
 
-    # ---- SEZIONE 2 — INCOME & COSTS -----------------------------------------
-    out.append("\n*2) INCOME & COSTS*")
-    out.append("_Income (already part of Revenue):_")
-    out.append(f"   • Product revenue: ${m.product_revenue:,.2f}")
-    out.append(f"   • Premium shipping collected: +${m.shipping_collected:,.2f}")
-    out.append(f"   • VAT collected: +${m.tax_collected:,.2f}")
-    out.append("_Costs:_")
+    # ---- SEZIONE 2 — COST BREAKDOWN -----------------------------------------
+    # NB: Revenue (= total_price) include GIÀ IVA + spedizione incassata: quel denaro
+    # è dentro revenue e quindi nel net profit UNA SOLA VOLTA. Niente righe income
+    # separate (evita il doppio conteggio); le mostriamo solo come parte dei costi.
+    out.append("\n*2) COST BREAKDOWN*")
     out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
     out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
     out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
