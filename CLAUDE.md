@@ -63,7 +63,7 @@ net_profit_giorno =
   − costi_spedizione       ($7 × numero_ordini)
   − fee_pagamenti          (7.5% × revenue)
   − spesa_ads_totale       (Meta + Google + TikTok — in Fase 1 Shopify = 0)
-  − quota_costi_fissi      ($5.668 / 30 ≈ $188.93 al giorno)  [attivabile/disattivabile]
+  − quota_costi_fissi      ($7.666 / 30 ≈ $255.53 al giorno)  [attivabile/disattivabile]
 ```
 Il report mostra **sia** il net profit "operativo" (senza costi fissi) **sia** quello
 "netto" (con la quota costi fissi).

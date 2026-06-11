@@ -5,10 +5,11 @@ default_cogs: 3          # fallback per SKU sconosciuti o costo $0
 shipping_per_order: 7    # USD, flat per ordine
 payment_fee_rate: 0.075  # 7.5% sul revenue
 # ---- Costi fissi mensili (USD) ----
+# total = valore autoritativo (personale + software). Lo split sotto è indicativo.
 fixed_costs_monthly:
   personnel: 3257
   software: 2411
-  total: 5668
+  total: 7666
 include_fixed_costs_in_net_profit: true   # se true, alloca total/30 al giorno
 # ---- Prodotti custom / personalizzati (costo specifico per handle) ----
 custom_products:
