@@ -14,8 +14,8 @@ application_url = "https://fx8bnw-ix.myshopify.com"
 embedded = false
 
 [access_scopes]
-# SOLO lettura — coerente con il sistema read-only.
-scopes = "read_orders,read_products,read_fulfillments,read_inventory"
+# SOLO lettura. read_reports serve per la CVR di negozio (ShopifyQL: FROM sessions).
+scopes = "read_orders,read_products,read_fulfillments,read_inventory,read_reports"
 
 [auth]
 redirect_urls = [

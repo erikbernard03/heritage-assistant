@@ -81,6 +81,7 @@ class DailyMetrics:
     # Income già INCLUSO in `revenue` (total_price), separato per visibilità (no double count):
     shipping_collected: float = 0.0     # spedizione premium pagata dal cliente
     tax_collected: float = 0.0          # IVA/tasse incassate
+    store_cvr: float = 0.0              # CVR negozio (Shopify primario, TW fallback); frazione
     line_items: list[LineItemCost] = field(default_factory=list)
 
     @property
@@ -102,6 +103,7 @@ class DailyMetrics:
             "net_profit_operativo": round(self.net_profit_operativo, 2),
             "net_profit_netto": round(self.net_profit_netto, 2),
             "aov": round(self.aov, 2),
+            "store_cvr": round(self.store_cvr, 6),
         }
 
 

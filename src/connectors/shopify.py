@@ -14,6 +14,7 @@ Nessun LLM tocca questi numeri.
 """
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 from typing import Iterator, Optional
@@ -21,6 +22,39 @@ from typing import Iterator, Optional
 import requests
 
 from config import settings
+
+
+def parse_session_conversion_rate(gql: dict) -> Optional[float]:
+    """
+    Estrae la CVR di negozio (frazione) dalla risposta GraphQL shopifyqlQuery.
+
+    Preferisce la metrica nativa `conversion_rate` di Shopify (combacia col dashboard);
+    in mancanza, calcola sessions_that_completed_checkout / sessions. None se i dati
+    non sono disponibili o l'accesso è negato (scope read_reports mancante).
+    """
+    if gql.get("errors"):  # es. ACCESS_DENIED (manca read_reports)
+        return None
+    node = (gql.get("data") or {}).get("shopifyqlQuery") or {}
+    if node.get("parseErrors"):
+        return None
+    table = node.get("tableData") or {}
+    cols = [c.get("name") for c in table.get("columns", [])]
+    rows = table.get("rows") or []
+    if not rows:
+        return None
+    rec = dict(zip(cols, rows[0]))
+
+    def _f(key) -> float:
+        try:
+            return float(rec.get(key))
+        except (TypeError, ValueError):
+            return 0.0
+
+    if rec.get("conversion_rate") not in (None, ""):
+        return _f("conversion_rate")
+    sessions = _f("sessions")
+    completed = _f("sessions_that_completed_checkout")
+    return (completed / sessions) if sessions > 0 else None
 
 
 class ShopifyError(RuntimeError):
@@ -185,3 +219,34 @@ class ShopifyConnector:
                 if prod.get("id") is not None and prod.get("handle"):
                     mapping[int(prod["id"])] = prod["handle"]
         return mapping
+
+    # --------------------------------------------------------------- analytics
+    def shopifyql(self, ql: str) -> dict:
+        """
+        Esegue una query ShopifyQL via GraphQL Admin API (richiede scope read_reports).
+        Ritorna il JSON grezzo della risposta GraphQL.
+        """
+        gql = (
+            "{ shopifyqlQuery(query: %s) { tableData { columns { name dataType } rows } "
+            "parseErrors } }" % json.dumps(ql)
+        )
+        resp = self._request("POST", "/graphql.json", json={"query": gql})
+        return resp.json()
+
+    def get_session_conversion_rate(self, day: str) -> Optional[float]:
+        """
+        CVR di negozio Shopify per il giorno `day` (YYYY-MM-DD), come FRAZIONE
+        (es. 0.0234 = 2.34%). Usa la definizione di Shopify (sessioni convertite /
+        sessioni totali) per combaciare col dashboard. None se non disponibile
+        (incl. scope read_reports mancante).
+
+        NB: ShopifyQL usa il fuso orario del negozio (qui Europe/Rome), quindi il
+        giorno combacia con quello del dashboard.
+        """
+        ql = (
+            "FROM sessions "
+            "SHOW sessions, sessions_that_completed_checkout, conversion_rate "
+            f"SINCE {day} UNTIL {day}"
+        )
+        data = self.shopifyql(ql)
+        return parse_session_conversion_rate(data)

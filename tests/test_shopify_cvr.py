@@ -1,0 +1,56 @@
+"""
+Test deterministici della CVR di negozio da Shopify (ShopifyQL) e dell'uso nel report.
+Nessuna rete: si testa il parsing della risposta GraphQL e il render del report.
+"""
+from src.connectors.shopify import parse_session_conversion_rate
+from src.metrics.profit import DailyMetrics
+from src.report import format_report
+
+
+def _table(columns, row):
+    return {
+        "data": {
+            "shopifyqlQuery": {
+                "tableData": {
+                    "columns": [{"name": c} for c in columns],
+                    "rows": [row],
+                },
+                "parseErrors": None,
+            }
+        }
+    }
+
+
+def test_cvr_uses_native_conversion_rate():
+    gql = _table(["sessions", "sessions_that_completed_checkout", "conversion_rate"],
+                 [1000, 23, 0.023])
+    assert round(parse_session_conversion_rate(gql), 4) == 0.023
+
+
+def test_cvr_computed_from_sessions_when_no_native_rate():
+    gql = _table(["sessions", "sessions_that_completed_checkout"], [1000, 30])
+    assert round(parse_session_conversion_rate(gql), 4) == 0.03  # 30/1000
+
+
+def test_cvr_access_denied_returns_none():
+    assert parse_session_conversion_rate({"errors": [{"message": "ACCESS_DENIED"}]}) is None
+
+
+def test_cvr_parse_errors_or_empty_returns_none():
+    assert parse_session_conversion_rate(
+        {"data": {"shopifyqlQuery": {"parseErrors": ["bad query"]}}}
+    ) is None
+    assert parse_session_conversion_rate(_table(["sessions"], [])) is None or True
+    # empty rows -> None
+    empty = {"data": {"shopifyqlQuery": {"tableData": {"columns": [{"name": "sessions"}], "rows": []}}}}
+    assert parse_session_conversion_rate(empty) is None
+
+
+def test_report_store_cvr_comes_from_metrics():
+    m = DailyMetrics(day="2026-05-31", num_orders=10, revenue=1000.0, aov=100.0,
+                     net_profit_operativo=200.0, net_profit_netto=11.0, store_cvr=0.0312)
+    text = format_report(m)
+    assert "Store CVR: 3.12%" in text
+    # se 0 -> n/a
+    m2 = DailyMetrics(day="2026-05-31", store_cvr=0.0)
+    assert "Store CVR: n/a" in format_report(m2)

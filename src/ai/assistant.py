@@ -105,7 +105,7 @@ def _build_data_context(store: SupabaseStore, days: int = 14) -> str:
             "meta.roas": "Meta-reported revenue / spend",
             "meta.cpa": "spend / purchases",
             "meta.cvr": "orders / clicks (campaign level)",
-            "google_daily.store_cvr": "store conversion rate (GA transactions/session, fraction; ×100 for %)",
+            "daily.store_cvr": "store conversion rate (Shopify sessions: converted/total; Triple Whale fallback; fraction, ×100 for %)",
             "klaviyo.revenue": "conversion value attributed to email campaigns (USD)",
             "klaviyo.open_rate": "opens / recipients (campaign level)",
             "klaviyo.click_rate": "clicks / recipients (campaign level)",

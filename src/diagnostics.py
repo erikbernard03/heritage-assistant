@@ -366,4 +366,20 @@ def google_diagnostic() -> str:
         except Exception as exc:  # noqa: BLE001
             out.append(f"❌ call FAILED: {exc}")
 
+    # CVR primaria: Shopify (ShopifyQL FROM sessions) — verifica scope read_reports
+    out.append("\n— Shopify Store CVR (primary, ShopifyQL FROM sessions) —")
+    try:
+        from src.connectors.shopify import ShopifyConnector
+
+        sc = ShopifyConnector().get_session_conversion_rate(yesterday)
+        if sc is None:
+            out.append(
+                "⚠️ Shopify CVR not available — likely missing 'read_reports' scope "
+                "(or analytics access). Falling back to Triple Whale pixelConversionRate."
+            )
+        else:
+            out.append(f"✅ Shopify CVR (yesterday): {sc * 100:.2f}%  → used as Store CVR.")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ Shopify CVR call failed: {exc}")
+
     return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)

@@ -102,6 +102,13 @@ e poi usa **"Shared Variables"** del progetto per non riscriverle, oppure copia/
 > `TRIPLEWHALE_API_KEY`. La spesa Google viene sottratta dal net profit. Diagnostica:
 > comando `/google_check`.
 
+> **Store CVR da Shopify:** esegui `supabase/migrations/006_store_cvr.sql` e
+> `007_store_cvr_daily.sql`. La CVR di negozio arriva da Shopify (ShopifyQL `FROM sessions`)
+> per combaciare col dashboard; serve lo scope **`read_reports`** sull'app Shopify
+> (aggiunto in `shopify.app.toml`): rilascia con `shopify app deploy` e **reinstalla** l'app.
+> Senza `read_reports` si usa automaticamente il fallback Triple Whale (`pixelConversionRate`).
+> Verifica con `/google_check` (mostra se la CVR Shopify funziona o serve il permesso).
+
 > 🔒 Non committare mai questi valori: vivono solo nelle Variables di Railway (e nel tuo `.env` locale).
 
 ---

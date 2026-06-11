@@ -73,6 +73,7 @@ def build_daily_report(
     window = window or yesterday_window()
 
     # Shopify: se fallisce/va in timeout, si degrada (0 ordini) e il report parte comunque.
+    shop = None
     try:
         shop = ShopifyConnector()
         orders = shop.get_orders(window.start, window.end)
@@ -116,6 +117,12 @@ def build_daily_report(
         ads_spend=meta_spend + tiktok_spend + google_spend,
     )
 
+    # Store CVR: Shopify (sessioni) PRIMARIO per combaciare col dashboard; Triple Whale
+    # (pixelConversionRate, in google_daily.store_cvr) come fallback.
+    shopify_cvr = _load_shopify_cvr(shop, window.day_str)
+    tw_cvr = float(google_daily.get("store_cvr") or 0) if google_daily else 0.0
+    metrics.store_cvr = shopify_cvr if shopify_cvr is not None else tw_cvr
+
     if persist:
         _persist(orders, handle_map, metrics)
 
@@ -126,6 +133,21 @@ def build_daily_report(
         metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
         tiktok_daily, tiktok_campaigns, google_daily, breakeven=breakeven,
     )
+
+
+def _load_shopify_cvr(shop, day: str) -> Optional[float]:
+    """
+    CVR di negozio da Shopify (ShopifyQL FROM sessions). Frazione, o None se non
+    disponibile (es. scope read_reports mancante / accesso negato) -> si userà il
+    fallback Triple Whale.
+    """
+    if shop is None:
+        return None
+    try:
+        return shop.get_session_conversion_rate(day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] Shopify CVR (sessions) non disponibile: {exc}")
+        return None
 
 
 def _load_breakeven(day: str):
@@ -339,13 +361,10 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         print(f"[report] persistenza Supabase saltata: {exc}")
 
 
-def _fmt_cvr(google_daily: Optional[dict]) -> str:
-    """CVR di negozio formattata in % (frazione -> percentuale). 'n/a' se assente."""
-    if google_daily:
-        cvr = float(google_daily.get("store_cvr") or 0)
-        if cvr > 0:
-            return f"{cvr * 100:.2f}%"
-    return "n/a"
+def _fmt_cvr(cvr_fraction: Optional[float]) -> str:
+    """CVR di negozio formattata in % (frazione -> percentuale). 'n/a' se assente/0."""
+    cvr = float(cvr_fraction or 0)
+    return f"{cvr * 100:.2f}%" if cvr > 0 else "n/a"
 
 
 def _breakeven_line(breakeven: Optional[tuple]) -> str:
@@ -394,7 +413,7 @@ def format_report(
     out.append(f"💰 Revenue: *${m.revenue:,.2f}*")
     out.append(f"🛒 Orders: *{m.num_orders}*")
     out.append(f"🧾 AOV: ${m.aov:,.2f}")
-    out.append(f"📈 Store CVR: {_fmt_cvr(google_daily)}")
+    out.append(f"📈 Store CVR: {_fmt_cvr(m.store_cvr)}")
     out.append(_breakeven_line(breakeven))
     for line in (
         _roas_cpa_line("📣", "Meta", meta_daily),
