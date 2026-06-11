@@ -11,14 +11,25 @@ fixed_costs_monthly:
   software: 2411
   total: 7666
 include_fixed_costs_in_net_profit: true   # se true, alloca total/30 al giorno
-# ---- Prodotti custom / personalizzati (costo specifico per handle) ----
+# ---- Regole per FAMIGLIA di prodotto (match per parole chiave) ----
+# Ordinate: la PRIMA regola che combacia vince. Match sui TOKEN di handle+titolo
+# (slugificati): coprono tutte le varianti (round/square/engraved/raised/black paint)
+# senza elencare ogni handle. Valutate DOPO il match per handle/titolo esatto e PRIMA
+# del default ($3). I free/B2G1F prendono comunque il COGS pieno (per quantità).
+title_rules:
+  - keywords: [personalized, coat, arms]        # Personalized Coat of Arms Bracelet
+    cogs: 32
+  - keywords: [personalized, sterling, signet]  # Sterling Silver Signet (PRIMA del generico)
+    cogs: 76.54
+  - keywords: [personalized, signet]            # tutti i signet gold/white-gold, ogni variante
+    cogs: 17.21
+  - keywords: [ring, size, adjuster]            # Ring Size Adjuster Kit
+    cogs: 1
+
+# ---- Override per HANDLE esatto (priorità massima sulle regole) ----
 custom_products:
   personalized-sterling-silver-signet-ring: 76.54
   personalized-wooden-ring-box: 3
-  personalized-white-gold-plated-signet-ring: 17
-  personalized-gold-plated-signet-ring: 17
-  personalized-whitegold-palted-square-signet-ring-with-engraved-date: 17   # White Gold Plated Square
-  personalized-gold-plated-square-signet-ring: 17                            # Gold Plated Square
 # ---- Regola per collection: tutto ciò che sta in queste collection = $3 ----
 collection_cogs:
   classic-rings: 3

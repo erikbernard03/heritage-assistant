@@ -49,9 +49,28 @@ class CogsResolver:
             for handle, cost in (self._raw.get(section) or {}).items():
                 self._handle_to_cost[handle.strip().lower()] = float(cost)
 
+        # Regole per FAMIGLIA (ordinate): (lista_keyword_lowercase, costo).
+        # Valutate tra il match esatto (handle/titolo) e il default.
+        self._title_rules: list[tuple[list[str], float]] = []
+        for rule in (self._raw.get("title_rules") or []):
+            kws = [str(k).strip().lower() for k in (rule.get("keywords") or [])]
+            if kws and rule.get("cogs") is not None:
+                self._title_rules.append((kws, float(rule["cogs"])))
+
     def _load(self) -> dict:
         with open(self.yaml_path, "r", encoding="utf-8") as fh:
             return yaml.safe_load(fh) or {}
+
+    def _match_title_rules(self, handle: Optional[str], title: Optional[str]) -> Optional[float]:
+        """Prima regola title_rules i cui token (keyword) sono TUTTI in handle+titolo."""
+        tokens = set(
+            (_slugify(handle or "") + "-" + _slugify(title or "")).split("-")
+        )
+        tokens.discard("")
+        for kws, cost in self._title_rules:
+            if all(kw in tokens for kw in kws):
+                return cost
+        return None
 
     def cogs_for_handle(
         self, handle: Optional[str], title: Optional[str] = None
@@ -60,9 +79,10 @@ class CogsResolver:
         Restituisce il COGS in USD per un prodotto.
 
         Priorità:
-          1. match esatto per handle
-          2. match per titolo "slugificato" (fallback se l'handle non è noto)
-          3. default_cogs ($3)
+          1. match esatto per handle (custom_products / classic_rings / bracelets)
+          2. match per titolo "slugificato" (stesso elenco esatto)
+          3. title_rules (match per FAMIGLIA via keyword su handle+titolo)
+          4. default_cogs ($3)
         Inoltre: se il costo trovato è 0 => default_cogs (regola di sicurezza).
         """
         cost: Optional[float] = None
@@ -72,6 +92,9 @@ class CogsResolver:
 
         if cost is None and title:
             cost = self._handle_to_cost.get(_slugify(title))
+
+        if cost is None:
+            cost = self._match_title_rules(handle, title)
 
         if cost is None or cost == 0:
             return self.default_cogs

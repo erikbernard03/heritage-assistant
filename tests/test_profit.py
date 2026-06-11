@@ -29,6 +29,33 @@ def test_cogs_resolution():
     assert RESOLVER.cogs_for_handle(None, "Carnelian Signet Ring") == 3
 
 
+def test_cogs_title_rules_family_match():
+    r = RESOLVER
+    # variante gold signet NON elencata negli handle -> 17.21 (non più $3)
+    assert r.cogs_for_handle(
+        "personalized-gold-plated-signet-ring-raised-black-paint",
+        "Personalized Gold Plated Signet Ring (Raised, Black Paint)",
+    ) == 17.21
+    # variante white gold square -> 17.21
+    assert r.cogs_for_handle(
+        "personalized-white-gold-plated-square-signet-ring",
+        "Personalized White Gold Plated Square Signet Ring",
+    ) == 17.21
+    # Coat of Arms Bracelet -> 32
+    assert r.cogs_for_handle(
+        "personalized-coat-of-arms-bracelet", "Personalized Coat of Arms Bracelet"
+    ) == 32
+    # Sterling variante (non in custom_products) -> 76.54, NON 17.21 (regola prima del generico)
+    assert r.cogs_for_handle(
+        "personalized-sterling-silver-signet-ring-engraved",
+        "Personalized Sterling Silver Signet Ring Engraved",
+    ) == 76.54
+    # Ring Size Adjuster Kit -> 1
+    assert r.cogs_for_handle("ring-size-adjuster-kit", "Ring Size Adjuster Kit") == 1
+    # classic/stone ring (NON personalized) -> 3 (non aggancia la regola signet)
+    assert r.cogs_for_handle("amethyst-signet-ring", "Amethyst Signet Ring") == 3
+
+
 def test_daily_metrics_basic():
     # 2 ordini: uno personalized sterling (76.54) + uno classic (3)
     handle_map = {111: "personalized-sterling-silver-signet-ring", 222: "carnelian-signet-ring"}
