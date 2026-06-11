@@ -133,6 +133,21 @@ class SupabaseStore:
         )
         return res.data or []
 
+    def get_daily_metrics_before(self, day: str, limit: int = 4) -> list[dict]:
+        """
+        Le ultime `limit` righe di daily_metrics con day < `day` (le più recenti prima).
+        Robusto ai buchi: salta i giorni mancanti e prende N giorni REALI.
+        """
+        res = (
+            self.client.table("daily_metrics")
+            .select("*")
+            .lt("day", day)
+            .order("day", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return res.data or []
+
     # ----------------------------------------------------------- Meta (Fase 2)
     def upsert_meta_daily(self, meta) -> None:
         """Upsert dei totali Meta giornalieri (chiave = day)."""

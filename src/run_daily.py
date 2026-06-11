@@ -90,11 +90,19 @@ def main() -> int:
         print(f"[run_daily] not midnight in Rome (now {rome_now}): skipping.", flush=True)
         return 0
 
+    # Log esplicito del giorno trattato: così nei log di Railway si vede CHE notte
+    # è girato il cron (e, con il log di _persist, se il giorno è stato salvato).
+    from src.report import yesterday_window
+
+    target = yesterday_window().day_str
+    rome_now = datetime.now(pytz.timezone(settings.TIMEZONE)).strftime("%Y-%m-%d %H:%M")
+    print(f"[run_daily] RUN START — report day={target} (Rome now {rome_now})", flush=True)
+
     # Generazione: se fallisce del tutto, invio comunque una nota di errore.
     try:
         _, text = build_daily_report(persist=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[run_daily] report generation FAILED: {exc}", flush=True)
+        print(f"[run_daily] report generation FAILED for day={target}: {exc}", flush=True)
         text = f"⚠️ Daily report could not be generated: {exc}"
 
     try:

@@ -199,6 +199,35 @@ async def cmd_refresh_today(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await msg.edit_text(f"❌ Refresh error: {exc}")
 
 
+async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/backfill START END (admin) -> re-pull Shopify e riempie daily_metrics nel range."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    args = context.args or []
+    start = args[0] if len(args) >= 1 else None
+    end = args[1] if len(args) >= 2 else start
+    if not start:
+        await update.message.reply_text("Usage: /backfill YYYY-MM-DD [YYYY-MM-DD]")
+        return
+
+    msg = await update.message.reply_text(f"⏳ Backfilling daily_metrics {start} → {end}…")
+    try:
+        from src.report import backfill_daily_metrics
+
+        result = await asyncio.to_thread(backfill_daily_metrics, start, end)
+        lines = ["✅ Backfill done (Shopify-only):"]
+        for day, orders, rev in result:
+            if orders == "ERR":
+                lines.append(f"  • {day}: ❌ {rev}")
+            else:
+                lines.append(f"  • {day}: {orders} orders · ${rev:,.2f}")
+        await msg.edit_text("\n".join(lines)[:3800])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nel backfill")
+        await msg.edit_text(f"❌ Backfill error: {exc}")
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Messaggi liberi -> risposta AI (Claude legge i dati dal DB)."""
     if not _authorized(update):
@@ -230,6 +259,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("tw_check", cmd_tw_check))
     app.add_handler(CommandHandler("google_check", cmd_google_check))
     app.add_handler(CommandHandler("refresh_today", cmd_refresh_today))
+    app.add_handler(CommandHandler("backfill", cmd_backfill))
     # qualsiasi testo non-comando -> assistente AI
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     return app

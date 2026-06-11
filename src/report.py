@@ -150,18 +150,20 @@ def _load_shopify_cvr(shop, day: str) -> Optional[float]:
         return None
 
 
-def _load_breakeven(day: str):
-    """Legge i 4 giorni precedenti da daily_metrics e calcola (break-even ROAS, CPA)."""
+def _load_breakeven(day: str, store=None):
+    """
+    Break-even (ROAS, CPA) dai 4 giorni REALI più recenti PRIMA di `day`.
+    Robusto ai buchi: se mancano giorni di calendario, va più indietro fino a
+    raccogliere 4 giorni che hanno effettivamente dati in daily_metrics.
+    """
     try:
-        from datetime import date as _date, timedelta as _td
-
-        from src.db.supabase_client import SupabaseStore
         from src.metrics.profit import compute_breakeven
 
-        d = _date.fromisoformat(day)
-        start = (d - _td(days=4)).isoformat()   # 4 giorni precedenti
-        end = (d - _td(days=1)).isoformat()
-        rows = SupabaseStore().get_daily_metrics_range(start, end)
+        if store is None:
+            from src.db.supabase_client import SupabaseStore
+
+            store = SupabaseStore()
+        rows = store.get_daily_metrics_before(day, limit=4)
         return compute_breakeven(rows)
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
         print(f"[report] break-even non calcolato: {exc}")
@@ -357,8 +359,57 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         store.upsert_orders(orders, handle_map)
         store.upsert_line_items(metrics)
         store.upsert_daily_metrics(metrics)
+        print(
+            f"[report] daily_metrics PERSISTED day={metrics.day} "
+            f"orders={metrics.num_orders} revenue=${metrics.revenue:,.2f}"
+        )
     except Exception as exc:  # il report deve arrivare comunque
-        print(f"[report] persistenza Supabase saltata: {exc}")
+        # ATTENZIONE: se questo fallisce, il giorno NON viene salvato -> buco in
+        # daily_metrics (break-even/backfill ne risentono). Causa tipica: migration
+        # mancante (es. colonna store_cvr) o Supabase non raggiungibile.
+        print(f"[report] ⚠️ daily_metrics NON salvato per {metrics.day}: {exc}")
+
+
+def backfill_daily_metrics(start_iso: str, end_iso: str, max_days: int = 60) -> list[tuple]:
+    """
+    Re-pull SHOPIFY e upsert daily_metrics per OGNI giorno in [start_iso, end_iso].
+    Riempe/sovrascrive le righe mancanti (revenue, ordini, COGS). Solo Shopify:
+    gli ad-spend NON vengono backfillati (net profit di quei giorni = solo Shopify).
+
+    Ritorna una lista (giorno, ordini|'ERR', revenue|messaggio) per il riepilogo.
+    """
+    from datetime import date as _date, timedelta as _td
+
+    from src.db.supabase_client import SupabaseStore
+
+    d0 = _date.fromisoformat(start_iso)
+    d1 = _date.fromisoformat(end_iso)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days + 1 > max_days:
+        raise ValueError(f"Range troppo ampio (> {max_days} giorni).")
+
+    shop = ShopifyConnector()
+    handle_map = shop.get_products_handle_map()  # uguale per tutti i giorni: una volta
+    store = SupabaseStore()
+
+    out: list[tuple] = []
+    cur = d0
+    while cur <= d1:
+        w = day_window(cur)
+        try:
+            orders = shop.get_orders(w.start, w.end)
+            for o in orders:
+                o["_day_rome"] = w.day_str
+            m = compute_daily_metrics(w.day_str, orders, handle_map, ads_spend=0.0)
+            store.upsert_orders(orders, handle_map)
+            store.upsert_line_items(m)
+            store.upsert_daily_metrics(m)
+            out.append((w.day_str, m.num_orders, round(m.revenue, 2)))
+        except Exception as exc:  # noqa: BLE001
+            out.append((w.day_str, "ERR", str(exc)[:80]))
+        cur += _td(days=1)
+    return out
 
 
 def _fmt_cvr(cvr_fraction: Optional[float]) -> str:
