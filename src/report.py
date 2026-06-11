@@ -423,8 +423,9 @@ def format_report(
         out.append(f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}")
 
     # ---- SEZIONE 3 — PER-PLATFORM AD BREAKDOWN ------------------------------
+    be_roas = (breakeven or (None, None))[0]
     section3 = (
-        _format_meta_section(meta_daily, meta_campaigns)
+        _format_meta_section(meta_daily, meta_campaigns, be_roas)
         + _format_tiktok_section(tiktok_daily, tiktok_campaigns)
         + _format_google_section(google_daily)
         + _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
@@ -488,9 +489,11 @@ def _format_tiktok_section(
 
 
 def _format_meta_section(
-    meta_daily: Optional[dict], meta_campaigns: Optional[list[dict]]
+    meta_daily: Optional[dict],
+    meta_campaigns: Optional[list[dict]],
+    be_roas: Optional[float] = None,
 ) -> str:
-    """Sezione Meta: totali + breakdown per campagna (USD)."""
+    """Sezione Meta: totali + breakdown per campagna (USD). `be_roas` = break-even 4gg."""
     if not meta_daily:
         if settings.META_ACCESS_TOKEN and settings.META_AD_ACCOUNT_ID:
             return "\n📣 *Meta Ads*: data not available for this day.\n"
@@ -512,16 +515,18 @@ def _format_meta_section(
 
     campaigns = meta_campaigns or []
     if campaigns:
+        be_str = f" (break-even {be_roas:,.2f}x)" if be_roas else ""
         out += "\n*Campaign breakdown* (top by spend):\n"
         for c in campaigns[:8]:
             name = (c.get("campaign_name") or "(no name)")[:34]
             c_spend = float(c.get("spend") or 0)
             c_rev = float(c.get("revenue") or 0)
             c_ord = int(c.get("orders") or 0)
-            c_cvr = float(c.get("cvr") or 0) * 100
+            c_roas = float(c.get("roas") or 0)
+            cpa_str = f"${(c_spend / c_ord):,.2f}" if c_ord > 0 else "n/a"
             out += (
-                f"• *{name}* — spend ${c_spend:,.0f} · "
-                f"rev ${c_rev:,.0f} · ord {c_ord} · CVR {c_cvr:.1f}%\n"
+                f"• *{name}* — spend ${c_spend:,.0f} · rev ${c_rev:,.0f} · "
+                f"ord {c_ord} · ROAS {c_roas:,.2f}x · CPA {cpa_str}{be_str}\n"
             )
     return out
 
