@@ -375,6 +375,12 @@ def _breakeven_line(breakeven: Optional[tuple]) -> str:
     return f"⚖️ Break-even ROAS: {roas_s} · Break-even CPA: {cpa_s} (4-day avg)"
 
 
+def _be_roas_x(be_roas: Optional[float]) -> str:
+    """Break-even ROAS dinamico (media 4 giorni) per le sezioni piattaforma;
+    se non disponibile usa il riferimento configurato (settings.BREAK_EVEN_ROAS)."""
+    return f"{be_roas:,.2f}x" if be_roas else f"{settings.BREAK_EVEN_ROAS:.2f}x"
+
+
 def _roas_cpa_line(emoji: str, name: str, daily: Optional[dict]) -> Optional[str]:
     """Riga compatta ROAS/CPA per la Sezione 1 (None se la piattaforma non ha dati)."""
     if not daily:
@@ -443,8 +449,8 @@ def format_report(
     be_roas = (breakeven or (None, None))[0]
     section3 = (
         _format_meta_section(meta_daily, meta_campaigns, be_roas)
-        + _format_tiktok_section(tiktok_daily, tiktok_campaigns)
-        + _format_google_section(google_daily)
+        + _format_tiktok_section(tiktok_daily, tiktok_campaigns, be_roas)
+        + _format_google_section(google_daily, be_roas)
         + _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
     )
     if section3.strip():
@@ -454,7 +460,9 @@ def format_report(
     return "\n".join(out) + "\n"
 
 
-def _format_google_section(google_daily: Optional[dict]) -> str:
+def _format_google_section(
+    google_daily: Optional[dict], be_roas: Optional[float] = None
+) -> str:
     """Sezione Google Ads: totali account (USD). Nessun breakdown per campagna (per ora)."""
     if not google_daily:
         if settings.TRIPLEWHALE_API_KEY:
@@ -470,7 +478,7 @@ def _format_google_section(google_daily: Optional[dict]) -> str:
     out = (
         f"\n🔎 *Google Ads — {google_daily.get('day')}* _(USD, via Triple Whale)_\n"
         f"   • Spend: *${spend:,.2f}*\n"
-        f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
+        f"   • ROAS: *{roas:,.2f}x* (break-even {_be_roas_x(be_roas)})\n"
         f"   • Attributed revenue: ${revenue:,.2f}\n"
     )
     if orders > 0:
@@ -479,9 +487,11 @@ def _format_google_section(google_daily: Optional[dict]) -> str:
 
 
 def _format_tiktok_section(
-    tiktok_daily: Optional[dict], tiktok_campaigns: Optional[list[dict]]
+    tiktok_daily: Optional[dict],
+    tiktok_campaigns: Optional[list[dict]],
+    be_roas: Optional[float] = None,
 ) -> str:
-    """Sezione TikTok: totali + breakdown per campagna (USD)."""
+    """Sezione TikTok: totali + breakdown per campagna (USD). `be_roas` = break-even 4gg."""
     if not tiktok_daily:
         if settings.TRIPLEWHALE_API_KEY:
             return "\n🎵 *TikTok Ads*: data not available for this day.\n"
@@ -496,7 +506,7 @@ def _format_tiktok_section(
     out = (
         f"\n🎵 *TikTok Ads — {tiktok_daily.get('day')}* _(USD, via Triple Whale)_\n"
         f"   • Spend: *${spend:,.2f}*\n"
-        f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
+        f"   • ROAS: *{roas:,.2f}x* (break-even {_be_roas_x(be_roas)})\n"
         f"   • Attributed revenue: ${revenue:,.2f}\n"
     )
     # CPA/conversioni solo se TikTok riporta gli ordini (altrimenti saltati)
@@ -525,14 +535,14 @@ def _format_meta_section(
     out = (
         f"\n📣 *Meta Ads — {meta_daily.get('day')}* _(USD)_\n"
         f"   • Spend: *${spend:,.2f}*\n"
-        f"   • ROAS: *{roas:,.2f}x* (break-even {settings.BREAK_EVEN_ROAS:.2f}x)\n"
+        f"   • ROAS: *{roas:,.2f}x* (break-even {_be_roas_x(be_roas)})\n"
         f"   • CPA: ${cpa:,.2f}\n"
         f"   • Attributed revenue: ${revenue:,.2f} · purchases: {orders}\n"
     )
 
     campaigns = meta_campaigns or []
     if campaigns:
-        be_str = f" (break-even {be_roas:,.2f}x)" if be_roas else ""
+        be_str = f" (break-even {_be_roas_x(be_roas)})"
         out += "\n*Campaign breakdown* (top by spend):\n"
         for c in campaigns[:8]:
             name = (c.get("campaign_name") or "(no name)")[:34]
