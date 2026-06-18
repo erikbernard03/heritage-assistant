@@ -228,6 +228,30 @@ async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.edit_text(f"❌ Backfill error: {exc}")
 
 
+async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/audit YYYY-MM-DD (admin) -> scompone la revenue del giorno (tax/shipping/refund/boundary)."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("Usage: /audit YYYY-MM-DD")
+        return
+    day = args[0]
+
+    msg = await update.message.reply_text(f"⏳ Auditing {day}…")
+    try:
+        from src.diagnostics import day_audit
+
+        text = await asyncio.to_thread(day_audit, day)
+        await msg.edit_text(text[:3800])
+        if len(text) > 3800:
+            await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nell'audit")
+        await msg.edit_text(f"❌ Audit error: {exc}")
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Messaggi liberi -> risposta AI (Claude legge i dati dal DB)."""
     if not _authorized(update):
@@ -260,6 +284,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("google_check", cmd_google_check))
     app.add_handler(CommandHandler("refresh_today", cmd_refresh_today))
     app.add_handler(CommandHandler("backfill", cmd_backfill))
+    app.add_handler(CommandHandler("audit", cmd_audit))
     # qualsiasi testo non-comando -> assistente AI
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     return app

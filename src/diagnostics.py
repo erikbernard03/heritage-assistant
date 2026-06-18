@@ -383,3 +383,130 @@ def google_diagnostic() -> str:
         out.append(f"❌ Shopify CVR call failed: {exc}")
 
     return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)
+
+
+# --------------------------------------------------------------------------- #
+# Audit di un singolo giorno: confronto report-revenue vs subtotal/tax/shipping,
+# refund e ordini al confine di mezzanotte (Europe/Rome).
+# --------------------------------------------------------------------------- #
+def _f(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def summarize_orders(orders: list[dict]) -> dict:
+    """Aggregazione pura degli ordini di un giorno (testabile, niente rete)."""
+    from src.metrics.profit import _order_shipping_collected, _order_tax_collected
+
+    active = [o for o in orders if not o.get("cancelled_at")]
+    cancelled = [o for o in orders if o.get("cancelled_at")]
+
+    def _current(o):
+        c = o.get("current_total_price")
+        return _f(c) if c is not None else _f(o.get("total_price"))
+
+    total = sum(_f(o.get("total_price")) for o in active)
+    current = sum(_current(o) for o in active)
+    refunded_orders = [
+        o for o in active
+        if (_f(o.get("total_price")) - _current(o) > 0.005)
+        or o.get("financial_status") in ("refunded", "partially_refunded")
+    ]
+    return {
+        "n_active": len(active),
+        "n_cancelled": len(cancelled),
+        "total_price": total,                                        # = report revenue
+        "current_total": current,                                   # dopo i refund
+        "refunded_amount": total - current,
+        "subtotal": sum(_f(o.get("subtotal_price")) for o in active),  # prodotto (post-sconti, no tax/ship)
+        "tax": sum(_order_tax_collected(o) for o in active),
+        "shipping": sum(_order_shipping_collected(o) for o in active),
+        "cancelled_total": sum(_f(o.get("total_price")) for o in cancelled),
+        "refunded_orders": refunded_orders,
+    }
+
+
+def day_audit(day: str) -> str:
+    """Audit completo di un giorno (Europe/Rome): report revenue vs componenti."""
+    from datetime import date as _date
+
+    from src.connectors.shopify import ShopifyConnector
+    from src.report import day_window
+
+    out = [f"🔍 Day audit — {day} (Europe/Rome)"]
+    try:
+        w = day_window(_date.fromisoformat(day))
+    except Exception as exc:  # noqa: BLE001
+        return f"❌ Bad date: {exc}"
+
+    try:
+        orders = ShopifyConnector().get_orders(w.start, w.end)
+    except Exception as exc:  # noqa: BLE001
+        return "\n".join(out + [f"❌ Shopify pull failed: {exc}"])
+
+    s = summarize_orders(orders)
+    out.append(f"Active orders: {s['n_active']} · cancelled: {s['n_cancelled']}")
+    out.append(f"Σ total_price (REPORT revenue): ${s['total_price']:,.2f}")
+    out.append(
+        f"Σ current_total_price (after refunds): ${s['current_total']:,.2f}  "
+        f"→ refunded ${s['refunded_amount']:,.2f}"
+    )
+    out.append(f"Σ subtotal_price (product only, post-discount, excl tax+ship): ${s['subtotal']:,.2f}")
+    out.append(f"Σ total_tax (VAT collected): ${s['tax']:,.2f}")
+    out.append(f"Σ shipping collected: ${s['shipping']:,.2f}")
+    out.append(f"check subtotal+tax+shipping = ${s['subtotal'] + s['tax'] + s['shipping']:,.2f}")
+    out.append(
+        f"so: revenue−tax = ${s['total_price'] - s['tax']:,.2f} · "
+        f"revenue−tax−shipping = ${s['total_price'] - s['tax'] - s['shipping']:,.2f}"
+    )
+
+    # stored daily_metrics
+    try:
+        from src.db.supabase_client import SupabaseStore
+
+        row = SupabaseStore().get_daily_metrics_for_day(day)
+        if row:
+            out.append(
+                f"stored daily_metrics: revenue ${_f(row.get('revenue')):,.2f} · "
+                f"orders {row.get('num_orders')}"
+            )
+        else:
+            out.append("stored daily_metrics: (no row for this day)")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"daily_metrics read failed: {exc}")
+
+    # ordini al confine di mezzanotte (±30 min dai due bordi)
+    tz = pytz.timezone(settings.TIMEZONE)
+    out.append("Orders within ±30 min of a midnight boundary:")
+    found = 0
+    for o in orders:
+        if o.get("cancelled_at"):
+            continue
+        ca = o.get("created_at")
+        if not ca:
+            continue
+        try:
+            dt = datetime.fromisoformat(ca.replace("Z", "+00:00")).astimezone(tz)
+        except Exception:  # noqa: BLE001
+            continue
+        near_start = abs((dt - w.start).total_seconds()) < 1800
+        near_end = abs((w.end - dt).total_seconds()) < 1800
+        if near_start or near_end:
+            out.append(
+                f"  • {dt.strftime('%Y-%m-%d %H:%M:%S')} Rome · ${_f(o.get('total_price')):,.2f} "
+                f"· #{o.get('order_number') or o.get('name')}"
+            )
+            found += 1
+    if not found:
+        out.append("  (none)")
+
+    # refund
+    out.append(f"Refunded / partially-refunded active orders: {len(s['refunded_orders'])}")
+    for o in s["refunded_orders"][:10]:
+        out.append(
+            f"  • #{o.get('order_number') or o.get('name')} status={o.get('financial_status')} "
+            f"total=${_f(o.get('total_price')):,.2f} current=${_f(o.get('current_total_price')):,.2f}"
+        )
+    return "\n".join(out)
