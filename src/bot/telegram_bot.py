@@ -268,7 +268,24 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(answer, parse_mode=ParseMode.MARKDOWN)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nella risposta libera")
-        await update.message.reply_text(f"❌ Error: {exc}")
+        await update.message.reply_text(_friendly_ai_error(exc))
+
+
+def _friendly_ai_error(exc: Exception) -> str:
+    """Messaggio chiaro per gli errori dell'AI (i comandi deterministici non la usano)."""
+    msg = str(exc).lower()
+    det = ("ℹ️ The deterministic commands don't use the AI and still work: "
+           "/report · /audit · /backfill · /refresh_today · /pl · "
+           "/meta_check · /google_check · /tw_check · /klaviyo_check.")
+    if "credit balance" in msg or "billing" in msg or "too low" in msg:
+        return ("🤖 AI is unavailable: the Anthropic account is out of credits.\n"
+                "Add credits at console.anthropic.com → Plans & Billing.\n\n" + det)
+    if "rate limit" in msg or "429" in msg or "overloaded" in msg:
+        return "🤖 AI is busy (rate-limited/overloaded). Try again in a moment.\n\n" + det
+    if "authentication" in msg or "invalid x-api-key" in msg or "401" in msg:
+        return ("🤖 AI unavailable: invalid/missing ANTHROPIC_API_KEY on the bot service.\n\n"
+                + det)
+    return f"❌ AI error: {exc}\n\n{det}"
 
 
 def build_application() -> Application:
