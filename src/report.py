@@ -804,8 +804,19 @@ def aggregate_week(
     m.net_profit_operativo = s("net_profit_operativo")
     m.net_profit_netto = s("net_profit_netto")
     m.aov = (m.revenue / m.num_orders) if m.num_orders else 0.0
-    cvrs = [_f(r.get("store_cvr")) for r in rows if _f(r.get("store_cvr")) > 0]
-    m.store_cvr = (sum(cvrs) / len(cvrs)) if cvrs else 0.0   # CVR media (blended)
+    # Store CVR di PERIODO = conversioni totali / sessioni totali (NON somma né media
+    # dei tassi giornalieri). Le sessioni non sono salvate: le ricostruiamo per giorno
+    # (sessions_d = orders_d / cvr_d), poi CVR = Σorders / Σsessions. Resta nel range
+    # reale dei tassi giornalieri (mai la somma delle percentuali).
+    tot_conv = 0.0
+    tot_sessions = 0.0
+    for r in rows:
+        cvr_d = _f(r.get("store_cvr"))
+        ord_d = _f(r.get("num_orders"))
+        if cvr_d > 0 and ord_d > 0:
+            tot_conv += ord_d
+            tot_sessions += ord_d / cvr_d
+    m.store_cvr = (tot_conv / tot_sessions) if tot_sessions > 0 else 0.0
 
     # break-even: resta a 4 giorni (i 4 più recenti del set)
     last4 = sorted(rows, key=lambda r: r["day"], reverse=True)[:4]

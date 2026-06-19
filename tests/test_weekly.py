@@ -58,7 +58,8 @@ def test_aggregate_week_totals_and_per_platform():
     assert round(m.cogs_total, 2) == 200.0
     assert round(m.net_profit_operativo, 2) == 1110.0
     assert round(m.fixed_cost_daily, 2) == 766.59       # 255.53 × 3 giorni
-    assert round(m.store_cvr, 4) == 0.03                # media dei valori >0: (0.02+0.04)/2
+    # CVR periodo = Σorders/Σsessions: 10/0.02 + 5/0.04 = 625 sess, 15 conv -> 0.024
+    assert round(m.store_cvr, 4) == 0.024
     assert header.startswith("📊 *3-day report — 2026-06-14 → 2026-06-17*")  # 3 giorni reali
 
     # Meta da TOTALI 7gg: spend 200, rev 600 -> ROAS 3.0 ; orders 6 -> CPA 33.33
@@ -101,9 +102,43 @@ def test_build_weekly_report_with_fake_store_renders_layout():
     assert "*1) KEY METRICS*" in text
     assert "*2) COST BREAKDOWN*" in text
     assert "Revenue: *$1,000.00*" in text
-    assert "Store CVR: 4.00%" in text   # media (0.03+0.05)/2 = 0.04
+    # CVR di periodo = Σorders/Σsessions con sessions=orders/cvr:
+    # 5/0.03 + 5/0.05 = 266.67 sess, 10 conv -> 3.75% (NON la media 4.00%)
+    assert "Store CVR: 3.75%" in text
     # margine aggregato: operating 755/1000=75.5% · net 243.94/1000=24.4%
     assert "📊 Margin — operating 75.5% · net 24.4%" in text
+
+
+def test_period_cvr_totals_based_not_summed():
+    """5 giorni @ ~0.45% CVR -> periodo ~0.45%, NON ~2.25% (somma)."""
+    daily = [
+        {"day": d, "num_orders": n, "revenue": 100.0 * n, "cogs_total": 0.0,
+         "shipping_total": 0.0, "payment_fees": 0.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0,
+         "net_profit_netto": 0.0, "store_cvr": 0.0045}
+        for d, n in zip(
+            ("2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13", "2026-06-14"),
+            (8, 12, 5, 20, 9),
+        )
+    ]
+    m = aggregate_week(daily, [], [], [], [], [], [])[0]
+    assert round(m.store_cvr * 100, 2) == 0.45     # = tasso giornaliero
+    assert m.store_cvr < 0.01                       # sotto l'1%, mai 2.25%
+
+
+def test_period_cvr_is_weighted_between_min_and_max():
+    daily = [
+        {"day": "2026-06-10", "num_orders": 10, "revenue": 1000.0, "store_cvr": 0.004,
+         "cogs_total": 0.0, "shipping_total": 0.0, "payment_fees": 0.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0, "net_profit_netto": 0.0},
+        {"day": "2026-06-11", "num_orders": 10, "revenue": 1000.0, "store_cvr": 0.008,
+         "cogs_total": 0.0, "shipping_total": 0.0, "payment_fees": 0.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0, "net_profit_netto": 0.0},
+    ]
+    m = aggregate_week(daily, [], [], [], [], [], [])[0]
+    # sessions 10/0.004=2500 + 10/0.008=1250 = 3750 ; 20/3750 = 0.005333
+    assert round(m.store_cvr, 6) == round(20 / 3750, 6)
+    assert 0.004 < m.store_cvr < 0.008             # tra min e max, non somma
 
 
 def test_report5_limits_to_5_days_and_header():
