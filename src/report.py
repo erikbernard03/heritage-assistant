@@ -453,13 +453,15 @@ def format_report(
     tiktok_campaigns: Optional[list[dict]] = None,
     google_daily: Optional[dict] = None,
     breakeven: Optional[tuple] = None,
+    header: Optional[str] = None,
 ) -> str:
     """
     Report Telegram in 3 sezioni (Markdown, tutto in USD):
-      1) KEY METRICS  2) INCOME & COSTS  3) PER-PLATFORM AD BREAKDOWN
-    Tutti i numeri sono deterministici (nessun LLM).
+      1) KEY METRICS  2) COST BREAKDOWN  3) PER-PLATFORM AD BREAKDOWN
+    Tutti i numeri sono deterministici (nessun LLM). `header` opzionale per i report
+    multi-giorno (es. 7 giorni); se assente, intestazione giornaliera standard.
     """
-    out: list[str] = [f"📊 *Daily report — {m.day}* _(USD)_"]
+    out: list[str] = [header or f"📊 *Daily report — {m.day}* _(USD)_"]
 
     # ---- SEZIONE 1 — KEY METRICS --------------------------------------------
     out.append("\n*1) KEY METRICS*")
@@ -694,6 +696,153 @@ def build_monthly_pl(year: int, month: int) -> str:
         f"*Net profit for the month*\n"
         f"   • Operating: *${op:,.2f}*\n"
         f"   • Net: *${net:,.2f}*\n"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Report 7 GIORNI — aggregato dalle righe già salvate (nessuna chiamata API).
+# Stesso layout a 3 sezioni del /report giornaliero (riusa format_report).
+# --------------------------------------------------------------------------- #
+def _f(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _agg_ad_platform(rows: list[dict], day_set: set, label: str) -> Optional[dict]:
+    """Totali 7gg di una piattaforma ads (Meta/TikTok/Google): spend/rev/orders + ROAS/CPA."""
+    rows = [r for r in rows if r.get("day") in day_set]
+    if not rows:
+        return None
+    spend = sum(_f(r.get("spend")) for r in rows)
+    revenue = sum(_f(r.get("revenue")) for r in rows)
+    orders = sum(int(r.get("orders") or 0) for r in rows)
+    return {
+        "day": label,
+        "spend": spend,
+        "revenue": revenue,
+        "orders": orders,
+        "roas": (revenue / spend) if spend else 0.0,   # da totali 7gg
+        "cpa": (spend / orders) if orders else 0.0,     # da totali 7gg
+    }
+
+
+def _agg_klaviyo(rows: list[dict], day_set: set, label: str) -> Optional[dict]:
+    rows = [r for r in rows if r.get("day") in day_set]
+    if not rows:
+        return None
+    recipients = sum(int(r.get("recipients") or 0) for r in rows)
+    opens = sum(int(r.get("opens") or 0) for r in rows)
+    clicks = sum(int(r.get("clicks") or 0) for r in rows)
+    return {
+        "day": label,
+        "revenue": sum(_f(r.get("revenue")) for r in rows),
+        "opens": opens,
+        "clicks": clicks,
+        "conversions": sum(int(r.get("conversions") or 0) for r in rows),
+        "recipients": recipients,
+        "open_rate": (opens / recipients) if recipients else 0.0,
+        "click_rate": (clicks / recipients) if recipients else 0.0,
+    }
+
+
+def _agg_campaigns(rows: list[dict], day_set: set, value_keys: tuple) -> list[dict]:
+    """Aggrega le righe campagna per (id,nome) sommando i value_keys; calcola ROAS dai totali."""
+    rows = [r for r in rows if r.get("day") in day_set]
+    by: dict = {}
+    for r in rows:
+        key = (str(r.get("campaign_id") or ""), r.get("campaign_name") or "(no name)")
+        acc = by.setdefault(key, {k: 0.0 for k in value_keys})
+        for k in value_keys:
+            acc[k] += _f(r.get(k))
+    out: list[dict] = []
+    for (cid, name), acc in by.items():
+        row = {"campaign_id": cid, "campaign_name": name, **{k: acc[k] for k in value_keys}}
+        if "spend" in acc:
+            row["orders"] = int(acc.get("orders", 0))
+            row["roas"] = (acc["revenue"] / acc["spend"]) if acc.get("spend") else 0.0
+        out.append(row)
+    out.sort(key=lambda c: c.get("spend", c.get("revenue", 0)), reverse=True)
+    return out
+
+
+def aggregate_week(
+    daily_rows, meta_rows, tiktok_rows, google_rows, klaviyo_rows,
+    meta_camp_rows, klaviyo_camp_rows,
+):
+    """Aggrega le righe DB di N giorni in (metrics, dicts piattaforma, breakeven, header)."""
+    from src.metrics.profit import DailyMetrics, compute_breakeven
+
+    rows = sorted(daily_rows, key=lambda r: r["day"])
+    day_set = {r["day"] for r in rows}
+    start, end = rows[0]["day"], rows[-1]["day"]
+    label = f"{start} → {end}"
+
+    m = DailyMetrics(day=label)
+
+    def s(key):
+        return sum(_f(r.get(key)) for r in rows)
+
+    m.num_orders = int(s("num_orders"))
+    m.revenue = s("revenue")
+    m.cogs_total = s("cogs_total")
+    m.shipping_total = s("shipping_total")
+    m.payment_fees = s("payment_fees")
+    m.ads_spend = s("ads_spend")
+    m.fixed_cost_daily = s("fixed_cost_daily")    # somma delle quote giornaliere = quota × giorni
+    m.net_profit_operativo = s("net_profit_operativo")
+    m.net_profit_netto = s("net_profit_netto")
+    m.aov = (m.revenue / m.num_orders) if m.num_orders else 0.0
+    cvrs = [_f(r.get("store_cvr")) for r in rows if _f(r.get("store_cvr")) > 0]
+    m.store_cvr = (sum(cvrs) / len(cvrs)) if cvrs else 0.0   # CVR media (blended)
+
+    # break-even: resta a 4 giorni (i 4 più recenti del set)
+    last4 = sorted(rows, key=lambda r: r["day"], reverse=True)[:4]
+    breakeven = compute_breakeven(last4)
+
+    meta_daily = _agg_ad_platform(meta_rows, day_set, label)
+    tiktok_daily = _agg_ad_platform(tiktok_rows, day_set, label)
+    google_daily = _agg_ad_platform(google_rows, day_set, label)
+    klaviyo_daily = _agg_klaviyo(klaviyo_rows, day_set, label)
+    meta_campaigns = _agg_campaigns(meta_camp_rows, day_set, ("spend", "revenue", "orders"))
+    klaviyo_campaigns = _agg_campaigns(
+        klaviyo_camp_rows, day_set, ("revenue", "opens", "clicks", "conversions")
+    )
+
+    header = f"📊 *7-day report — {start} → {end}* _(USD, {len(rows)} days)_"
+    return (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
+            klaviyo_daily, klaviyo_campaigns, breakeven, header)
+
+
+def build_weekly_report(days: int = 7, store=None) -> str:
+    """Report a N giorni (default 7): aggrega le righe salvate, riusa il layout giornaliero."""
+    if store is None:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+
+    daily_rows = store.get_recent_daily_metrics(days=days)
+    if not daily_rows:
+        return "📊 *7-day report* — no data available yet."
+
+    day_strs = sorted(r["day"] for r in daily_rows)
+    start, end = day_strs[0], day_strs[-1]
+    meta_rows = store.get_table_range("meta_daily", start, end)
+    meta_camp_rows = store.get_table_range("meta_campaigns", start, end)
+    tiktok_rows = store.get_table_range("tiktok_daily", start, end)
+    google_rows = store.get_table_range("google_daily", start, end)
+    klaviyo_rows = store.get_table_range("klaviyo_daily", start, end)
+    klaviyo_camp_rows = store.get_table_range("klaviyo_campaigns", start, end)
+
+    (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
+     klaviyo_daily, klaviyo_campaigns, breakeven, header) = aggregate_week(
+        daily_rows, meta_rows, tiktok_rows, google_rows, klaviyo_rows,
+        meta_camp_rows, klaviyo_camp_rows,
+    )
+    return format_report(
+        m, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
+        tiktok_daily, [], google_daily, breakeven=breakeven, header=header,
     )
 
 

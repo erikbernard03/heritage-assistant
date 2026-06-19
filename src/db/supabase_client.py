@@ -148,6 +148,24 @@ class SupabaseStore:
         )
         return res.data or []
 
+    _RANGE_TABLES = {
+        "daily_metrics", "meta_daily", "meta_campaigns", "tiktok_daily",
+        "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
+    }
+
+    def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:
+        """Tutte le righe di `table` con day in [start_day, end_day] (per i report multi-giorno)."""
+        if table not in self._RANGE_TABLES:
+            raise ValueError(f"table non consentita: {table}")
+        res = (
+            self.client.table(table)
+            .select("*")
+            .gte("day", start_day)
+            .lte("day", end_day)
+            .execute()
+        )
+        return res.data or []
+
     # ----------------------------------------------------------- Meta (Fase 2)
     def upsert_meta_daily(self, meta) -> None:
         """Upsert dei totali Meta giornalieri (chiave = day)."""
