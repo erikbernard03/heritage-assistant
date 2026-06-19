@@ -1,7 +1,23 @@
 """
-Test deterministici dell'aggregazione a 7 giorni (aggregate_week) — nessuna rete.
+Test deterministici dell'aggregazione multi-giorno (aggregate_week) e del margine.
+Nessuna rete.
 """
+from src.metrics.profit import DailyMetrics
 from src.report import aggregate_week, build_weekly_report, format_report
+
+
+def test_margin_line_in_key_metrics():
+    m = DailyMetrics(day="2026-06-17", num_orders=10, revenue=1000.0,
+                     net_profit_operativo=300.0, net_profit_netto=120.0)
+    text = format_report(m)
+    # operating 300/1000=30.0% · net 120/1000=12.0%
+    assert "📊 Margin — operating 30.0% · net 12.0%" in text
+
+
+def test_margin_line_zero_revenue_na():
+    m = DailyMetrics(day="2026-06-17", num_orders=0, revenue=0.0,
+                     net_profit_operativo=0.0, net_profit_netto=-255.53)
+    assert "📊 Margin — operating n/a · net n/a" in format_report(m)
 
 
 def test_aggregate_week_totals_and_per_platform():
@@ -43,7 +59,7 @@ def test_aggregate_week_totals_and_per_platform():
     assert round(m.net_profit_operativo, 2) == 1110.0
     assert round(m.fixed_cost_daily, 2) == 766.59       # 255.53 × 3 giorni
     assert round(m.store_cvr, 4) == 0.03                # media dei valori >0: (0.02+0.04)/2
-    assert header.startswith("📊 *7-day report — 2026-06-14 → 2026-06-17*")
+    assert header.startswith("📊 *3-day report — 2026-06-14 → 2026-06-17*")  # 3 giorni reali
 
     # Meta da TOTALI 7gg: spend 200, rev 600 -> ROAS 3.0 ; orders 6 -> CPA 33.33
     assert round(meta_daily["spend"], 2) == 200.0
@@ -80,8 +96,39 @@ def test_build_weekly_report_with_fake_store_renders_layout():
          "net_profit_netto": 121.97, "store_cvr": 0.05},
     ]
     text = build_weekly_report(store=_FakeStore(daily))
-    assert "7-day report — 2026-06-16 → 2026-06-17" in text
+    # header riflette i giorni reali (2)
+    assert "2-day report — 2026-06-16 → 2026-06-17" in text
     assert "*1) KEY METRICS*" in text
     assert "*2) COST BREAKDOWN*" in text
     assert "Revenue: *$1,000.00*" in text
     assert "Store CVR: 4.00%" in text   # media (0.03+0.05)/2 = 0.04
+    # margine aggregato: operating 755/1000=75.5% · net 243.94/1000=24.4%
+    assert "📊 Margin — operating 75.5% · net 24.4%" in text
+
+
+def test_report5_limits_to_5_days_and_header():
+    """/report5 usa days=5: lo store riceve days=5 e l'header riflette i giorni reali."""
+    class _FakeStore:
+        def __init__(self):
+            self.requested = None
+
+        def get_recent_daily_metrics(self, days=7):
+            self.requested = days
+            # ritorna 5 giorni reali (con buco 06-15)
+            return [
+                {"day": d, "num_orders": 4, "revenue": 400.0, "cogs_total": 40.0,
+                 "shipping_total": 28.0, "payment_fees": 30.0, "ads_spend": 0.0,
+                 "fixed_cost_daily": 255.53, "net_profit_operativo": 302.0,
+                 "net_profit_netto": 46.47, "store_cvr": 0.03}
+                for d in ("2026-06-13", "2026-06-14", "2026-06-16", "2026-06-17", "2026-06-18")
+            ]
+
+        def get_table_range(self, table, start, end):
+            return []
+
+    store = _FakeStore()
+    text = build_weekly_report(days=5, store=store)
+    assert store.requested == 5
+    assert "5-day report — 2026-06-13 → 2026-06-18" in text
+    assert "Revenue: *$2,000.00*" in text         # 400 × 5
+    assert "Orders: *20*" in text

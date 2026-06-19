@@ -426,6 +426,15 @@ def _breakeven_line(breakeven: Optional[tuple]) -> str:
     return f"⚖️ Break-even ROAS: {roas_s} · Break-even CPA: {cpa_s} (4-day avg)"
 
 
+def _margin_line(m: DailyMetrics) -> str:
+    """Margine % (deterministico): operating profit / revenue e net profit / revenue."""
+    if m.revenue:
+        op = m.net_profit_operativo / m.revenue * 100
+        net = m.net_profit_netto / m.revenue * 100
+        return f"📊 Margin — operating {op:.1f}% · net {net:.1f}%"
+    return "📊 Margin — operating n/a · net n/a"
+
+
 def _be_roas_x(be_roas: Optional[float]) -> str:
     """Break-even ROAS dinamico (media 4 giorni) per le sezioni piattaforma;
     se non disponibile usa il riferimento configurato (settings.BREAK_EVEN_ROAS)."""
@@ -484,6 +493,7 @@ def format_report(
     if klaviyo_daily:
         kla_rev = float(klaviyo_daily.get("revenue") or 0)
         out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
+    out.append(_margin_line(m))
 
     # ---- SEZIONE 2 — COST BREAKDOWN -----------------------------------------
     # NB: Revenue (= total_price) include GIÀ IVA + spedizione incassata: quel denaro
@@ -810,7 +820,7 @@ def aggregate_week(
         klaviyo_camp_rows, day_set, ("revenue", "opens", "clicks", "conversions")
     )
 
-    header = f"📊 *7-day report — {start} → {end}* _(USD, {len(rows)} days)_"
+    header = f"📊 *{len(rows)}-day report — {start} → {end}* _(USD)_"
     return (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
             klaviyo_daily, klaviyo_campaigns, breakeven, header)
 
@@ -824,7 +834,7 @@ def build_weekly_report(days: int = 7, store=None) -> str:
 
     daily_rows = store.get_recent_daily_metrics(days=days)
     if not daily_rows:
-        return "📊 *7-day report* — no data available yet."
+        return f"📊 *{days}-day report* — no data available yet."
 
     day_strs = sorted(r["day"] for r in daily_rows)
     start, end = day_strs[0], day_strs[-1]

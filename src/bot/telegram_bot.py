@@ -85,6 +85,25 @@ async def cmd_report7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.edit_text(f"❌ 7-day report error: {exc}")
 
 
+async def cmd_report5(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/report5 -> report aggregato sugli ultimi 5 giorni con dati (stesso layout)."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    msg = await update.message.reply_text("⏳ Building the 5-day report…")
+    try:
+        text = await asyncio.to_thread(build_weekly_report, 5)
+        try:
+            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:  # noqa: BLE001
+            await msg.edit_text(text[:3800])
+            if len(text) > 3800:
+                await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nel report 5 giorni")
+        await msg.edit_text(f"❌ 5-day report error: {exc}")
+
+
 async def cmd_pl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/pl ANNO MESE -> P&L mensile deterministico dal database."""
     if not _authorized(update):
@@ -314,6 +333,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("report7", cmd_report7))
+    app.add_handler(CommandHandler("report5", cmd_report5))
     app.add_handler(CommandHandler("pl", cmd_pl))
     app.add_handler(CommandHandler("klaviyo_check", cmd_klaviyo_check))
     app.add_handler(CommandHandler("meta_check", cmd_meta_check))
