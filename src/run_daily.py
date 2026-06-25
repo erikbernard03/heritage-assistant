@@ -17,8 +17,10 @@ GARANZIE DI TERMINAZIONE (anti-hang):
 Schedulazione su Railway (Cron Schedule in UTC, niente ora legale):
 
     Cron Schedule (UTC):  0 22,23 * * *
-    Variabile:            RAILWAY_CRON_GUARD=1
+    Variabile (opzionale): RAILWAY_CRON_GUARD  (default = guardia ATTIVA)
 
+La guardia mezzanotte-Roma è ATTIVA DI DEFAULT (anche senza env var). Per disattivarla
+(test/refresh immediato) imposta RAILWAY_CRON_GUARD=0.
 La guardia fa procedere SOLO la run che cade alle 00:xx di Europe/Rome:
 - estate (CEST, UTC+2): 22:00 UTC = 00:00 Roma -> procede; 23:00 UTC = 01:00 -> salta
 - inverno (CET,  UTC+1): 22:00 UTC = 23:00 Roma -> salta;  23:00 UTC = 00:00 -> procede
@@ -55,12 +57,20 @@ def _start_watchdog(seconds: int) -> None:
     threading.Thread(target=_kill, daemon=True, name="run-daily-watchdog").start()
 
 
-def _should_run_now() -> bool:
-    """True se la guardia è disattiva, o se a Europe/Rome è l'ora 00:xx."""
-    if os.getenv("RAILWAY_CRON_GUARD", "").strip().lower() not in ("1", "true", "yes"):
-        return True
+def _should_run_now() -> tuple[bool, int]:
+    """
+    (deve_inviare, ora_Roma).
+
+    La guardia mezzanotte-Roma è ATTIVA DI DEFAULT (anche se la env var non è impostata):
+    invia SOLO se a Europe/Rome è l'ora 00:xx. Così, con cron UTC `0 22,23 * * *`, una
+    sola delle due run cade a mezzanotte di Roma (DST-safe) e invia; l'altra esce.
+    Per disabilitare la guardia (es. test/refresh immediato): RAILWAY_CRON_GUARD=0.
+    """
     rome_hour = datetime.now(pytz.timezone(settings.TIMEZONE)).hour
-    return rome_hour == 0
+    guard = os.getenv("RAILWAY_CRON_GUARD", "1").strip().lower()
+    if guard in ("0", "false", "no", "off", "disabled"):
+        return True, rome_hour       # guardia disabilitata -> esegue/invia sempre
+    return rome_hour == 0, rome_hour
 
 
 def _send(text: str) -> None:
@@ -85,9 +95,16 @@ def _send(text: str) -> None:
 
 def main() -> int:
     """Esegue una volta sola e ritorna un exit code (0 = ok)."""
-    if not _should_run_now():
-        rome_now = datetime.now(pytz.timezone(settings.TIMEZONE)).strftime("%H:%M")
-        print(f"[run_daily] not midnight in Rome (now {rome_now}): skipping.", flush=True)
+    should_send, rome_hour = _should_run_now()
+    rome_now = datetime.now(pytz.timezone(settings.TIMEZONE)).strftime("%Y-%m-%d %H:%M")
+    guard_env = os.getenv("RAILWAY_CRON_GUARD", "(unset→guard ON)")
+    print(
+        f"[run_daily] Rome now {rome_now} (hour {rome_hour}) · "
+        f"RAILWAY_CRON_GUARD={guard_env} · decision="
+        f"{'SEND (midnight Rome)' if should_send else 'SKIP (not midnight Rome)'}",
+        flush=True,
+    )
+    if not should_send:
         return 0
 
     # Log esplicito del giorno trattato: così nei log di Railway si vede CHE notte
@@ -95,8 +112,7 @@ def main() -> int:
     from src.report import yesterday_window
 
     target = yesterday_window().day_str
-    rome_now = datetime.now(pytz.timezone(settings.TIMEZONE)).strftime("%Y-%m-%d %H:%M")
-    print(f"[run_daily] RUN START — report day={target} (Rome now {rome_now})", flush=True)
+    print(f"[run_daily] RUN START — report day={target}", flush=True)
 
     # Generazione: se fallisce del tutto, invio comunque una nota di errore.
     try:
