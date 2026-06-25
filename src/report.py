@@ -779,9 +779,10 @@ def _agg_campaigns(rows: list[dict], day_set: set, value_keys: tuple) -> list[di
 
 def aggregate_week(
     daily_rows, meta_rows, tiktok_rows, google_rows, klaviyo_rows,
-    meta_camp_rows, klaviyo_camp_rows,
+    meta_camp_rows, klaviyo_camp_rows, header=None,
 ):
-    """Aggrega le righe DB di N giorni in (metrics, dicts piattaforma, breakeven, header)."""
+    """Aggrega le righe DB di N giorni in (metrics, dicts piattaforma, breakeven, header).
+    `header` opzionale: se assente, usa "{n}-day report — start → end"."""
     from src.metrics.profit import DailyMetrics, compute_breakeven
 
     rows = sorted(daily_rows, key=lambda r: r["day"])
@@ -831,22 +832,13 @@ def aggregate_week(
         klaviyo_camp_rows, day_set, ("revenue", "opens", "clicks", "conversions")
     )
 
-    header = f"📊 *{len(rows)}-day report — {start} → {end}* _(USD)_"
+    header = header or f"📊 *{len(rows)}-day report — {start} → {end}* _(USD)_"
     return (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
             klaviyo_daily, klaviyo_campaigns, breakeven, header)
 
 
-def build_weekly_report(days: int = 7, store=None) -> str:
-    """Report a N giorni (default 7): aggrega le righe salvate, riusa il layout giornaliero."""
-    if store is None:
-        from src.db.supabase_client import SupabaseStore
-
-        store = SupabaseStore()
-
-    daily_rows = store.get_recent_daily_metrics(days=days)
-    if not daily_rows:
-        return f"📊 *{days}-day report* — no data available yet."
-
+def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
+    """Renderizza un report multi-giorno dalle righe daily_metrics fornite (gap-safe)."""
     day_strs = sorted(r["day"] for r in daily_rows)
     start, end = day_strs[0], day_strs[-1]
     meta_rows = store.get_table_range("meta_daily", start, end)
@@ -859,12 +851,47 @@ def build_weekly_report(days: int = 7, store=None) -> str:
     (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
      klaviyo_daily, klaviyo_campaigns, breakeven, header) = aggregate_week(
         daily_rows, meta_rows, tiktok_rows, google_rows, klaviyo_rows,
-        meta_camp_rows, klaviyo_camp_rows,
+        meta_camp_rows, klaviyo_camp_rows, header=header,
     )
     return format_report(
         m, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
         tiktok_daily, [], google_daily, breakeven=breakeven, header=header,
     )
+
+
+def build_weekly_report(days: int = 7, store=None) -> str:
+    """Report a N giorni (default 7): N giorni più recenti CON DATI (gap-safe)."""
+    if store is None:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    daily_rows = store.get_recent_daily_metrics(days=days)
+    if not daily_rows:
+        return f"📊 *{days}-day report* — no data available yet."
+    return _render_multiday(daily_rows, store)
+
+
+def build_month_report(store=None, today=None) -> str:
+    """
+    Report MESE CORRENTE (month-to-date): dal 1° del mese (Europe/Rome) al giorno
+    più recente CON DATI. Stessa aggregazione totals-based dei report multi-giorno.
+    """
+    if store is None:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    if today is None:
+        today = datetime.now(pytz.timezone(settings.TIMEZONE)).date()
+
+    start_iso = today.replace(day=1).isoformat()
+    end_iso = today.isoformat()
+    daily_rows = store.get_daily_metrics_range(start_iso, end_iso)
+    if not daily_rows:
+        return f"📊 *Month-to-date report — {start_iso} → {end_iso}* — no data available yet."
+
+    data_end = max(r["day"] for r in daily_rows)   # giorno più recente CON dati
+    header = f"📊 *Month-to-date report — {start_iso} → {data_end}* _(USD)_"
+    return _render_multiday(daily_rows, store, header=header)
 
 
 if __name__ == "__main__":

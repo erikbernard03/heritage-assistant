@@ -24,7 +24,12 @@ from telegram.ext import (
 )
 
 from config import settings
-from src.report import build_daily_report, build_monthly_pl, build_weekly_report
+from src.report import (
+    build_daily_report,
+    build_month_report,
+    build_monthly_pl,
+    build_weekly_report,
+)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -46,6 +51,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Heritage Ring · AI Assistant (Phase 1 — Shopify).\n\n"
         "Commands:\n"
         "• /report — yesterday's Shopify report\n"
+        "• /report7 — aggregated last-7-days report\n"
+        "• /report5 — aggregated last-5-days report\n"
+        "• /reportmonth — month-to-date report (current calendar month)\n"
         "• /pl YEAR MONTH — monthly P&L (e.g. /pl 2026 4)\n\n"
         "Or just ask me a question (e.g. \"how did yesterday go?\")."
     )
@@ -102,6 +110,25 @@ async def cmd_report5(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel report 5 giorni")
         await msg.edit_text(f"❌ 5-day report error: {exc}")
+
+
+async def cmd_reportmonth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/reportmonth -> report aggregato del mese CORRENTE (month-to-date, stesso layout)."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    msg = await update.message.reply_text("⏳ Building the month-to-date report…")
+    try:
+        text = await asyncio.to_thread(build_month_report)
+        try:
+            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:  # noqa: BLE001 — troppo lungo / markdown
+            await msg.edit_text(text[:3800])
+            if len(text) > 3800:
+                await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nel report mensile (month-to-date)")
+        await msg.edit_text(f"❌ Month-to-date report error: {exc}")
 
 
 async def cmd_pl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -334,6 +361,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("report7", cmd_report7))
     app.add_handler(CommandHandler("report5", cmd_report5))
+    app.add_handler(CommandHandler("reportmonth", cmd_reportmonth))
     app.add_handler(CommandHandler("pl", cmd_pl))
     app.add_handler(CommandHandler("klaviyo_check", cmd_klaviyo_check))
     app.add_handler(CommandHandler("meta_check", cmd_meta_check))

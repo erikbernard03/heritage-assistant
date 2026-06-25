@@ -2,8 +2,15 @@
 Test deterministici dell'aggregazione multi-giorno (aggregate_week) e del margine.
 Nessuna rete.
 """
+from datetime import date
+
 from src.metrics.profit import DailyMetrics
-from src.report import aggregate_week, build_weekly_report, format_report
+from src.report import (
+    aggregate_week,
+    build_month_report,
+    build_weekly_report,
+    format_report,
+)
 
 
 def test_margin_line_in_key_metrics():
@@ -167,3 +174,52 @@ def test_report5_limits_to_5_days_and_header():
     assert "5-day report — 2026-06-13 → 2026-06-18" in text
     assert "Revenue: *$2,000.00*" in text         # 400 × 5
     assert "Orders: *20*" in text
+
+
+def test_reportmonth_window_first_of_month_to_last_data_day():
+    """
+    /reportmonth: finestra = 1° del mese corrente (Roma) -> giorno più recente CON dati.
+    Lo store riceve get_daily_metrics_range(primo-del-mese, oggi); l'header mostra
+    il range fino all'ULTIMO giorno con dati (non 'oggi' se i dati finiscono prima).
+    """
+    class _FakeStore:
+        def __init__(self):
+            self.range_args = None
+
+        def get_daily_metrics_range(self, start, end):
+            self.range_args = (start, end)
+            # 4 giorni reali del mese (con un buco: manca 06-03); l'ultimo dato è 06-23,
+            # mentre 'oggi' è 06-25 -> l'header deve fermarsi al 06-23.
+            return [
+                {"day": d, "num_orders": 10, "revenue": 1000.0, "cogs_total": 100.0,
+                 "shipping_total": 70.0, "payment_fees": 75.0, "ads_spend": 0.0,
+                 "fixed_cost_daily": 255.53, "net_profit_operativo": 755.0,
+                 "net_profit_netto": 499.47, "store_cvr": 0.03}
+                for d in ("2026-06-01", "2026-06-02", "2026-06-04", "2026-06-23")
+            ]
+
+        def get_table_range(self, table, start, end):
+            return []
+
+    store = _FakeStore()
+    text = build_month_report(store=store, today=date(2026, 6, 25))
+    # la query copre dal 1° del mese fino a OGGI (anche se i dati finiscono prima)
+    assert store.range_args == ("2026-06-01", "2026-06-25")
+    # l'header si ferma all'ultimo giorno CON dati (06-23), non al 06-25
+    assert "Month-to-date report — 2026-06-01 → 2026-06-23" in text
+    assert "*1) KEY METRICS*" in text
+    assert "*2) COST BREAKDOWN*" in text
+    assert "Revenue: *$4,000.00*" in text          # 1000 × 4 giorni
+    assert "Orders: *40*" in text
+    # costi fissi allocati = 255.53 × 4 giorni = 1022.12
+    assert "$1,022.12" in text
+
+
+def test_reportmonth_no_data_message():
+    class _FakeStore:
+        def get_daily_metrics_range(self, start, end):
+            return []
+
+    text = build_month_report(store=_FakeStore(), today=date(2026, 6, 25))
+    assert "Month-to-date report — 2026-06-01 → 2026-06-25" in text
+    assert "no data available yet" in text
