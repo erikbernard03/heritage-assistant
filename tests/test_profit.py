@@ -211,3 +211,68 @@ def test_load_breakeven_single_day_still_works():
     rows = [{"day": "2026-06-09", "revenue": 120, "num_orders": 1, "cogs_total": 12}]
     be_roas, be_cpa = _load_breakeven("2026-06-10", store=_FakeStore(rows))
     assert be_cpa is not None and be_roas is not None
+
+
+class _FakeShop:
+    """Shop fittizio: handle_map fisso + un ordine round-signet per ogni giorno."""
+
+    def __init__(self):
+        self.handle_map = {111: "personalized-gold-plated-signet-ring"}
+
+    def get_products_handle_map(self):
+        return self.handle_map
+
+    def get_orders(self, start, end):
+        # 1 ordine, 1 round signet -> COGS = costo corrente del round signet
+        return [{
+            "id": 1, "total_price": "100.00", "cancelled_at": None,
+            "line_items": [{"id": 10, "product_id": 111,
+                            "title": "Personalized Gold Plated Signet Ring", "quantity": 1}],
+        }]
+
+
+class _CaptureStore:
+    """Cattura le righe daily_metrics scritte dal backfill."""
+
+    def __init__(self):
+        self.written = {}
+
+    def upsert_orders(self, orders, handle_map):
+        pass
+
+    def upsert_line_items(self, metrics):
+        pass
+
+    def upsert_daily_metrics(self, metrics):
+        self.written[metrics.day] = metrics
+
+
+def test_backfill_recomputes_cogs_from_current_config():
+    """
+    /backfill RICALCOLA cogs_total dalla config CORRENTE (cogs.yaml su disco) e
+    sovrascrive la riga daily_metrics — NON lascia il vecchio valore. Round signet
+    ora = 12: per 1 ordine round-signet il backfill deve scrivere cogs_total=12.
+
+    Il backfill costruisce un resolver FRESCO (CogsResolver()) e invalida il singleton
+    @lru_cache di get_resolver(): verifichiamo entrambe le cose.
+    """
+    import src.config_loader as cl
+    from src.report import backfill_daily_metrics
+
+    # Scalda il singleton PRIMA: dimostra che dopo il backfill viene invalidato.
+    warmed = cl.get_resolver()
+    assert cl.get_resolver() is warmed            # cache attiva (stesso oggetto)
+
+    store = _CaptureStore()
+    result = backfill_daily_metrics(
+        "2026-06-24", "2026-06-24", shop=_FakeShop(), store=store
+    )
+
+    # cogs_total scritto = costo CORRENTE del round signet (12), non un valore stale.
+    m = store.written["2026-06-24"]
+    assert round(m.cogs_total, 2) == 12.0
+    # il riepilogo restituito riporta cogs_total + cogs/order
+    day, orders, rev, cogs, cogs_po = result[0]
+    assert orders == 1 and cogs == 12.0 and cogs_po == 12.0
+    # il singleton è stato invalidato dal backfill (nuovo oggetto al prossimo accesso)
+    assert cl.get_resolver() is not warmed

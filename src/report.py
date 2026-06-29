@@ -370,16 +370,27 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         print(f"[report] ⚠️ daily_metrics NON salvato per {metrics.day}: {exc}")
 
 
-def backfill_daily_metrics(start_iso: str, end_iso: str, max_days: int = 60) -> list[tuple]:
+def backfill_daily_metrics(
+    start_iso: str, end_iso: str, max_days: int = 60, shop=None, store=None
+) -> list[tuple]:
     """
     Re-pull SHOPIFY e upsert daily_metrics per OGNI giorno in [start_iso, end_iso].
-    Riempe/sovrascrive le righe mancanti (revenue, ordini, COGS). Solo Shopify:
-    gli ad-spend NON vengono backfillati (net profit di quei giorni = solo Shopify).
+    Riempe/sovrascrive le righe (revenue, ordini, COGS). Solo Shopify: gli ad-spend
+    NON vengono backfillati (net profit di quei giorni = solo Shopify).
 
-    Ritorna una lista (giorno, ordini|'ERR', revenue|messaggio) per il riepilogo.
+    COGS RICALCOLATO dalla config CORRENTE: il backfill costruisce un resolver NUOVO
+    leggendo config/cogs.yaml da disco in questo istante (NON usa il singleton
+    @lru_cache di get_resolver(), che in un processo long-running — il bot — resta
+    congelato sui valori caricati all'avvio). Così, dopo aver modificato cogs.yaml,
+    /backfill riscrive davvero cogs_total con i nuovi costi. Azzeriamo anche la cache
+    del singleton, così i report successivi nello stesso processo vedono i nuovi valori.
+
+    Ritorna una lista (giorno, ordini|'ERR', revenue, cogs_total, cogs_per_order)
+    (o (giorno, 'ERR', messaggio) sugli errori) per il riepilogo.
     """
     from datetime import date as _date, timedelta as _td
 
+    from src.config_loader import CogsResolver, get_resolver
     from src.db.supabase_client import SupabaseStore
 
     d0 = _date.fromisoformat(start_iso)
@@ -389,9 +400,14 @@ def backfill_daily_metrics(start_iso: str, end_iso: str, max_days: int = 60) -> 
     if (d1 - d0).days + 1 > max_days:
         raise ValueError(f"Range troppo ampio (> {max_days} giorni).")
 
-    shop = ShopifyConnector()
+    # Resolver FRESCO dal file su disco (immune al singleton stale). E invalida il
+    # singleton, così build_daily_report/build_weekly_report successivi ricaricano.
+    resolver = CogsResolver()
+    get_resolver.cache_clear()
+
+    shop = shop or ShopifyConnector()
     handle_map = shop.get_products_handle_map()  # uguale per tutti i giorni: una volta
-    store = SupabaseStore()
+    store = store or SupabaseStore()
 
     out: list[tuple] = []
     cur = d0
@@ -401,11 +417,17 @@ def backfill_daily_metrics(start_iso: str, end_iso: str, max_days: int = 60) -> 
             orders = shop.get_orders(w.start, w.end)
             for o in orders:
                 o["_day_rome"] = w.day_str
-            m = compute_daily_metrics(w.day_str, orders, handle_map, ads_spend=0.0)
+            m = compute_daily_metrics(
+                w.day_str, orders, handle_map, resolver=resolver, ads_spend=0.0
+            )
             store.upsert_orders(orders, handle_map)
             store.upsert_line_items(m)
             store.upsert_daily_metrics(m)
-            out.append((w.day_str, m.num_orders, round(m.revenue, 2)))
+            cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
+            out.append(
+                (w.day_str, m.num_orders, round(m.revenue, 2),
+                 round(m.cogs_total, 2), round(cogs_per_order, 2))
+            )
         except Exception as exc:  # noqa: BLE001
             out.append((w.day_str, "ERR", str(exc)[:80]))
         cur += _td(days=1)

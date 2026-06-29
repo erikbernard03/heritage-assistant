@@ -281,12 +281,16 @@ async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         from src.report import backfill_daily_metrics
 
         result = await asyncio.to_thread(backfill_daily_metrics, start, end)
-        lines = ["✅ Backfill done (Shopify-only):"]
-        for day, orders, rev in result:
-            if orders == "ERR":
-                lines.append(f"  • {day}: ❌ {rev}")
+        lines = ["✅ Backfill done (Shopify-only, COGS recomputed from current config):"]
+        for row in result:
+            if row[1] == "ERR":
+                lines.append(f"  • {row[0]}: ❌ {row[2]}")
             else:
-                lines.append(f"  • {day}: {orders} orders · ${rev:,.2f}")
+                day, orders, rev, cogs, cogs_po = row
+                lines.append(
+                    f"  • {day}: {orders} orders · ${rev:,.2f} · "
+                    f"COGS ${cogs:,.2f} (${cogs_po:,.2f}/order)"
+                )
         await msg.edit_text("\n".join(lines)[:3800])
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel backfill")
