@@ -19,8 +19,8 @@ def _order(order_id, total, line_items, cancelled=False):
 
 
 def test_cogs_resolution():
-    # handle custom noto
-    assert RESOLVER.cogs_for_handle("personalized-sterling-silver-signet-ring") == 76.54
+    # handle custom noto (sterling: 76.54 -> 48)
+    assert RESOLVER.cogs_for_handle("personalized-sterling-silver-signet-ring") == 48
     # classic ring -> 3
     assert RESOLVER.cogs_for_handle("carnelian-signet-ring") == 3
     # sconosciuto -> default 3
@@ -31,33 +31,61 @@ def test_cogs_resolution():
 
 def test_cogs_title_rules_family_match():
     r = RESOLVER
-    # variante gold signet NON elencata negli handle -> 17.21 (non più $3)
+    # variante gold signet ROUND NON elencata negli handle -> 12 (era 17.21)
     assert r.cogs_for_handle(
         "personalized-gold-plated-signet-ring-raised-black-paint",
         "Personalized Gold Plated Signet Ring (Raised, Black Paint)",
-    ) == 17.21
-    # variante white gold square -> 17.21
+    ) == 12
+    # variante white gold SQUARE -> 17.21 (regola square PRIMA del generico signet)
     assert r.cogs_for_handle(
         "personalized-white-gold-plated-square-signet-ring",
         "Personalized White Gold Plated Square Signet Ring",
     ) == 17.21
-    # Coat of Arms Bracelet -> 32
+    # Coat of Arms Bracelet -> 8 (era 32)
     assert r.cogs_for_handle(
         "personalized-coat-of-arms-bracelet", "Personalized Coat of Arms Bracelet"
-    ) == 32
-    # Sterling variante (non in custom_products) -> 76.54, NON 17.21 (regola prima del generico)
+    ) == 8
+    # Sterling variante (non in custom_products) -> 48, NON 12 (regola prima del generico)
     assert r.cogs_for_handle(
         "personalized-sterling-silver-signet-ring-engraved",
         "Personalized Sterling Silver Signet Ring Engraved",
-    ) == 76.54
+    ) == 48
     # Ring Size Adjuster Kit -> 1
     assert r.cogs_for_handle("ring-size-adjuster-kit", "Ring Size Adjuster Kit") == 1
     # classic/stone ring (NON personalized) -> 3 (non aggancia la regola signet)
     assert r.cogs_for_handle("amethyst-signet-ring", "Amethyst Signet Ring") == 3
 
 
+def test_cogs_verification_all_products():
+    """Verifica esplicita del mapping richiesto (ordine: first match wins)."""
+    r = RESOLVER
+    cases = [
+        # (handle, title, expected)
+        ("personalized-coat-of-arms-necklace",
+         "Personalized Coat of Arms Necklace", 8),
+        ("personalized-coat-of-arms-bracelet",
+         "Personalized Coat of Arms Bracelet", 8),
+        ("personalized-sterling-silver-signet-ring",
+         "Personalized Sterling Silver Signet Ring", 48),
+        ("personalized-gold-plated-square-signet-ring",
+         "Personalized Gold Plated Square Signet Ring", 17.21),
+        ("personalized-white-gold-plated-square-signet-ring",
+         "Personalized White Gold Plated Square Signet Ring", 17.21),
+        ("personalized-gold-plated-signet-ring",
+         "Personalized Gold Plated Signet Ring", 12),
+        ("personalized-white-gold-plated-signet-ring",
+         "Personalized White Gold Plated Signet Ring", 12),
+        # wooden box ed extra -> default 3
+        ("personalized-wooden-ring-box", "Personalized Wooden Ring Box", 3),
+    ]
+    for handle, title, expected in cases:
+        assert r.cogs_for_handle(handle, title) == expected, (handle, title)
+        # match anche solo per titolo (handle assente)
+        assert r.cogs_for_handle(None, title) == expected, ("title-only", title)
+
+
 def test_daily_metrics_basic():
-    # 2 ordini: uno personalized sterling (76.54) + uno classic (3)
+    # 2 ordini: uno personalized sterling (48) + uno classic (3)
     handle_map = {111: "personalized-sterling-silver-signet-ring", 222: "carnelian-signet-ring"}
     orders = [
         _order(1, "100.00", [{"id": 10, "product_id": 111, "title": "Sterling", "quantity": 1}]),
@@ -67,18 +95,18 @@ def test_daily_metrics_basic():
 
     assert m.num_orders == 2
     assert m.revenue == 150.0
-    # COGS: 76.54*1 + 3*2 = 82.54
-    assert round(m.cogs_total, 2) == 82.54
+    # COGS: 48*1 + 3*2 = 54.0
+    assert round(m.cogs_total, 2) == 54.0
     # spedizione: 7 * 2 = 14
     assert m.shipping_total == 14.0
     # fee: 0.075 * 150 = 11.25
     assert round(m.payment_fees, 2) == 11.25
-    # operativo = 150 - 82.54 - 14 - 11.25 - 0 = 42.21
-    assert round(m.net_profit_operativo, 2) == 42.21
+    # operativo = 150 - 54 - 14 - 11.25 - 0 = 70.75
+    assert round(m.net_profit_operativo, 2) == 70.75
     # costi fissi giornalieri = 7666/30 = 255.533...
     assert round(m.fixed_cost_daily, 2) == 255.53
-    # netto = 42.21 - 255.53 = -213.32
-    assert round(m.net_profit_netto, 2) == -213.32
+    # netto = 70.75 - 255.53 = -184.78
+    assert round(m.net_profit_netto, 2) == -184.78
     # AOV = 150/2 = 75
     assert m.aov == 75.0
 

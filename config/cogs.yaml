@@ -17,18 +17,22 @@ include_fixed_costs_in_net_profit: true   # se true, alloca total/30 al giorno
 # senza elencare ogni handle. Valutate DOPO il match per handle/titolo esatto e PRIMA
 # del default ($3). I free/B2G1F prendono comunque il COGS pieno (per quantità).
 title_rules:
-  - keywords: [personalized, coat, arms]        # Personalized Coat of Arms Bracelet
-    cogs: 32
-  - keywords: [personalized, sterling, signet]  # Sterling Silver Signet (PRIMA del generico)
-    cogs: 76.54
-  - keywords: [personalized, signet]            # tutti i signet gold/white-gold, ogni variante
+  - keywords: [personalized, coat, arms, necklace]  # Personalized Coat of Arms Necklace
+    cogs: 8
+  - keywords: [personalized, coat, arms, bracelet]  # Personalized Coat of Arms Bracelet
+    cogs: 8
+  - keywords: [personalized, sterling, signet]      # Sterling Silver Signet (tutte le varianti)
+    cogs: 48
+  - keywords: [square, signet]                      # Square gold/white-gold signets (PRIMA del generico)
     cogs: 17.21
-  - keywords: [ring, size, adjuster]            # Ring Size Adjuster Kit
+  - keywords: [personalized, signet]                # Round gold/white-gold signets (ogni variante)
+    cogs: 12
+  - keywords: [ring, size, adjuster]                # Ring Size Adjuster Kit
     cogs: 1
 
 # ---- Override per HANDLE esatto (priorità massima sulle regole) ----
 custom_products:
-  personalized-sterling-silver-signet-ring: 76.54
+  personalized-sterling-silver-signet-ring: 48
   personalized-wooden-ring-box: 3
 # ---- Regola per collection: tutto ciò che sta in queste collection = $3 ----
 collection_cogs:
