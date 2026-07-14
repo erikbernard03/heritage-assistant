@@ -215,6 +215,51 @@ def test_reportmonth_window_first_of_month_to_last_data_day():
     assert "$1,022.12" in text
 
 
+def test_aggregate_period_matches_report7_totals():
+    """
+    La dashboard usa aggregate_period: deve produrre gli STESSI totali che /report7
+    ottiene da build_weekly_report sugli stessi dati (numeri dashboard == Telegram).
+    """
+    from src.report import aggregate_period
+
+    class _FakeStore:
+        def __init__(self, daily):
+            self._daily = daily
+
+        def get_recent_daily_metrics(self, days=7):
+            return self._daily
+
+        def get_daily_metrics_range(self, start, end):
+            return [r for r in self._daily if start <= r["day"] <= end]
+
+        def get_table_range(self, table, start, end):
+            return []
+
+    daily = [
+        {"day": "2026-06-16", "num_orders": 5, "revenue": 500.0, "cogs_total": 50.0,
+         "shipping_total": 35.0, "payment_fees": 37.5, "ads_spend": 0.0,
+         "fixed_cost_daily": 255.53, "net_profit_operativo": 377.5,
+         "net_profit_netto": 121.97, "store_cvr": 0.03},
+        {"day": "2026-06-17", "num_orders": 5, "revenue": 500.0, "cogs_total": 50.0,
+         "shipping_total": 35.0, "payment_fees": 37.5, "ads_spend": 0.0,
+         "fixed_cost_daily": 255.53, "net_profit_operativo": 377.5,
+         "net_profit_netto": 121.97, "store_cvr": 0.05},
+    ]
+    store = _FakeStore(daily)
+
+    # dashboard path
+    m = aggregate_period(daily, store)[0]
+    # telegram path (stesso store) -> stesso testo, stessi numeri
+    text = build_weekly_report(store=store)
+
+    assert m.revenue == 1000.0 and m.num_orders == 10
+    assert round(m.aov, 2) == 100.0
+    # Store CVR di periodo identica a quella mostrata da /report7 (3.75%)
+    assert round(m.store_cvr * 100, 2) == 3.75
+    assert "Store CVR: 3.75%" in text
+    assert "Revenue: *$1,000.00*" in text
+
+
 def test_reportmonth_no_data_message():
     class _FakeStore:
         def get_daily_metrics_range(self, start, end):

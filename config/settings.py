@@ -55,6 +55,10 @@ TRIPLEWHALE_SHOP_ID = os.getenv("TRIPLEWHALE_SHOP_ID", "")
 
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
+# ---- Dashboard web (Streamlit, SOLA LETTURA) ----
+# Password d'accesso: se vuota, la dashboard NON è accessibile (blocca tutto).
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+
 # ---------------------------------------------------------------------------
 # Parametri di business (configurabili)
 # ---------------------------------------------------------------------------

@@ -1,0 +1,14 @@
+# Config Streamlit per la dashboard (servizio Railway "dashboard").
+# La porta viene passata via CLI ($PORT); qui solo impostazioni statiche.
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+# Nessuna telemetria d'uso verso Streamlit.
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"

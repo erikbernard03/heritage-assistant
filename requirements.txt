@@ -9,3 +9,6 @@ python-telegram-bot==21.6
 pytz==2024.2
 # Anthropic: risposte libere in linguaggio naturale (MAI per i numeri)
 anthropic==0.105.2
+# Dashboard web (terzo servizio Railway, SOLA LETTURA). pandas arriva con streamlit.
+streamlit==1.40.2
+pandas==2.2.3

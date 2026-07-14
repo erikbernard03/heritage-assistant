@@ -859,8 +859,19 @@ def aggregate_week(
             klaviyo_daily, klaviyo_campaigns, breakeven, header)
 
 
-def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
-    """Renderizza un report multi-giorno dalle righe daily_metrics fornite (gap-safe)."""
+def aggregate_period(daily_rows: list[dict], store, header=None):
+    """
+    Aggrega un periodo (righe daily_metrics già filtrate) nella STESSA struttura di
+    /report7: tira le righe piattaforma per [min,max giorno] e chiama aggregate_week.
+
+    Ritorna la tupla completa
+      (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
+       klaviyo_daily, klaviyo_campaigns, breakeven, header).
+
+    È il punto di riuso condiviso dalla dashboard web: usando questa funzione i numeri
+    della dashboard combaciano SEMPRE con i report Telegram (stessa aggregazione totals-based,
+    stessa Store CVR di periodo, stesso break-even 4-giorni).
+    """
     day_strs = sorted(r["day"] for r in daily_rows)
     start, end = day_strs[0], day_strs[-1]
     meta_rows = store.get_table_range("meta_daily", start, end)
@@ -870,10 +881,17 @@ def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
     klaviyo_rows = store.get_table_range("klaviyo_daily", start, end)
     klaviyo_camp_rows = store.get_table_range("klaviyo_campaigns", start, end)
 
-    (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
-     klaviyo_daily, klaviyo_campaigns, breakeven, header) = aggregate_week(
+    return aggregate_week(
         daily_rows, meta_rows, tiktok_rows, google_rows, klaviyo_rows,
         meta_camp_rows, klaviyo_camp_rows, header=header,
+    )
+
+
+def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
+    """Renderizza un report multi-giorno dalle righe daily_metrics fornite (gap-safe)."""
+    (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
+     klaviyo_daily, klaviyo_campaigns, breakeven, header) = aggregate_period(
+        daily_rows, store, header=header,
     )
     return format_report(
         m, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
