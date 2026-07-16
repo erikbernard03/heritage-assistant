@@ -83,5 +83,37 @@ def test_extract_store_cvr_fallback_pixelConversionRate_as_percent():
     assert round(cvr * 100, 4) == 0.4399   # display = 0.44%
 
 
+def test_extract_store_cvr_low_pct_is_scaled_not_treated_as_fraction():
+    """
+    REGRESSIONE (bug ×100): pixelConversionRate = 0.15 significa 0.15%, NON 15%.
+    La vecchia euristica '>0.2 => già %' NON convertiva 0.15 e lo mostrava come 15%.
+    Ora è sempre /100: 0.15 -> frazione 0.0015 -> display 0.15%.
+    """
+    summary = {"data": [
+        {"metricId": "pixelConversionRate", "values": {"current": 0.15}},
+    ]}
+    cvr = extract_store_cvr(summary)
+    assert round(cvr, 6) == 0.0015          # frazione, NON 0.15
+    assert round(cvr * 100, 2) == 0.15      # display = 0.15%
+
+
+def test_extract_store_cvr_fallback_scale_endtoend_stores_fraction():
+    """Il valore che finisce in google_daily.store_cvr è una FRAZIONE (0.0015), non 0.15."""
+    summary = {"data": [
+        {"metricId": "pixelConversionRate", "values": {"current": 0.15}},
+    ]}
+    cvr = extract_store_cvr(summary)
+    c = compute_google_metrics("2026-06-24", {}, store_cvr=cvr or 0.0)
+    assert round(c.store_cvr, 6) == 0.0015
+    assert c.as_db_row()["store_cvr"] == 0.0015
+
+
+def test_extract_store_cvr_typical_percent_values_scaled():
+    # 2.5 (=2.5%) -> 0.025 ; 0.44 (=0.44%) -> 0.0044
+    for raw, frac in ((2.5, 0.025), (0.44, 0.0044)):
+        summary = {"data": [{"metricId": "pixelConversionRate", "values": {"current": raw}}]}
+        assert round(extract_store_cvr(summary), 6) == frac
+
+
 def test_extract_store_cvr_absent_returns_none():
     assert extract_store_cvr({"data": [{"metricId": "ga_adCost", "values": {"current": 10}}]}) is None

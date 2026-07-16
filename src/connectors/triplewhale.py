@@ -231,7 +231,14 @@ def extract_store_cvr(summary: dict) -> Optional[float]:
     """
     CVR di negozio come FRAZIONE (es. 0.025 = 2.5%). None se non ricavabile.
     Priorità: pixelPurchases/sessions (se sessioni disponibili); altrimenti
-    pixelConversionRate (interpretato come percentuale, >0.2 => già in %).
+    pixelConversionRate.
+
+    IMPORTANTE — scala: `pixelConversionRate` di Triple Whale è SEMPRE in PERCENTUALE
+    (0.15 = 0.15%, 0.44 = 0.44%, 2.5 = 2.5%), quindi va SEMPRE diviso per 100 per
+    ottenere la frazione, coerente con la sorgente Shopify (che salva già una frazione).
+    La vecchia euristica ">0.2 => già percentuale, altrimenti frazione" era ERRATA:
+    per CVR sotto lo 0.2% (es. 0.15) NON divideva, e 0.15 finiva mostrato come 15%
+    (errore di scala ×100). Ora è deterministico: pixelConversionRate / 100.
     """
     vals = collect_metric_values(summary)
 
@@ -244,13 +251,11 @@ def extract_store_cvr(summary: dict) -> Optional[float]:
                 sessions = s
                 break
     if purchases and sessions:
-        return purchases / sessions  # frazione
+        return purchases / sessions  # frazione (già converted/total)
 
     if "pixelConversionRate" in vals:
         pcr = _num(vals.get("pixelConversionRate"))
-        # pixelConversionRate è in PERCENTUALE (0.4399 = 0.44%). Se invece fosse una
-        # frazione plausibile (<=0.2 cioè <=20%) la usiamo così com'è.
-        return (pcr / 100.0) if pcr > 0.2 else pcr
+        return pcr / 100.0  # SEMPRE percentuale -> frazione
     return None
 
 

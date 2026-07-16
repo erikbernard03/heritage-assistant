@@ -56,6 +56,27 @@ def test_report_store_cvr_comes_from_metrics():
     assert "Store CVR: n/a" in format_report(m2)
 
 
+def test_report_store_cvr_low_fraction_displays_correctly():
+    """Frazione 0.0015 (dal fallback Triple Whale corretto) -> '0.15%', non 15%."""
+    m = DailyMetrics(day="2026-06-24", num_orders=3, revenue=300.0, store_cvr=0.0015)
+    assert "Store CVR: 0.15%" in format_report(m)
+
+
+def test_report_store_cvr_sanity_guard_over_10pct_shows_na():
+    """
+    Guardia di sanity: una CVR salvata come 0.15 (=15%, dato stale con scala errata)
+    supera il 10% -> il report mostra 'n/a' invece di una percentuale assurda.
+    """
+    from src.report import CVR_SANITY_MAX
+
+    assert CVR_SANITY_MAX == 0.10
+    m = DailyMetrics(day="2026-06-24", num_orders=3, revenue=300.0, store_cvr=0.15)
+    assert "Store CVR: n/a" in format_report(m)
+    # un valore appena sotto la soglia resta mostrato normalmente
+    m2 = DailyMetrics(day="2026-06-24", num_orders=3, revenue=300.0, store_cvr=0.099)
+    assert "Store CVR: 9.90%" in format_report(m2)
+
+
 def test_report_has_no_separate_vat_or_shipping_income_lines():
     """Le righe income separate sono state rimosse (no doppio conteggio visivo)."""
     m = DailyMetrics(day="2026-05-31", num_orders=10, revenue=1000.0, aov=100.0,

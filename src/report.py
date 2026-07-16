@@ -434,9 +434,26 @@ def backfill_daily_metrics(
     return out
 
 
+# Soglia di sanity per la Store CVR: un e-commerce reale non converte oltre il ~10%.
+# Un valore superiore indica quasi certamente un errore di scala (×100) in un dato
+# ancora salvato con la vecchia logica: meglio "n/a" che una percentuale assurda.
+CVR_SANITY_MAX = 0.10  # 10%
+
+
 def _fmt_cvr(cvr_fraction: Optional[float]) -> str:
-    """CVR di negozio formattata in % (frazione -> percentuale). 'n/a' se assente/0."""
+    """
+    CVR di negozio formattata in % (frazione -> percentuale). 'n/a' se assente/0.
+    Guardia di sanity: se la frazione supera CVR_SANITY_MAX (10%) è quasi certamente
+    un errore di scala (dato stale ×100) -> logga un warning e mostra 'n/a'.
+    """
     cvr = float(cvr_fraction or 0)
+    if cvr > CVR_SANITY_MAX:
+        print(
+            f"[report] ⚠️ Store CVR sospetta ({cvr * 100:.2f}% > "
+            f"{CVR_SANITY_MAX * 100:.0f}%): probabile errore di scala -> mostro 'n/a'. "
+            f"Ri-backfilla per correggere il valore salvato."
+        )
+        return "n/a"
     return f"{cvr * 100:.2f}%" if cvr > 0 else "n/a"
 
 

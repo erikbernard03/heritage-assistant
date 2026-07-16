@@ -126,6 +126,14 @@ def _pct(frac) -> str:
     return f"{float(frac or 0) * 100:.2f}%"
 
 
+def _cvr(frac) -> str:
+    """Store CVR con la stessa guardia di sanity dei report (>10% -> 'n/a')."""
+    from src.report import CVR_SANITY_MAX
+
+    v = float(frac or 0)
+    return "n/a" if v > CVR_SANITY_MAX else _pct(v)
+
+
 def _margin(numer, denom) -> str:
     return f"{numer / denom * 100:.1f}%" if denom else "n/a"
 
@@ -159,7 +167,7 @@ def _render_kpis(m: dict, be: dict) -> None:
     r1[1].metric("Orders", f"{m['num_orders']:,}")
     r2 = st.columns(2)
     r2[0].metric("AOV", _usd(m["aov"]))
-    r2[1].metric("Store CVR", _pct(m["store_cvr"]))
+    r2[1].metric("Store CVR", _cvr(m["store_cvr"]))
     r3 = st.columns(2)
     r3[0].metric("Net profit (operating)", _usd(m["net_profit_operativo"]))
     r3[1].metric("Net profit (net)", _usd(m["net_profit_netto"]))
