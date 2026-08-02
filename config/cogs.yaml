@@ -9,7 +9,7 @@ payment_fee_rate: 0.075  # 7.5% sul revenue
 fixed_costs_monthly:
   personnel: 3257
   software: 2411
-  total: 7666
+  total: 6117
 include_fixed_costs_in_net_profit: true   # se true, alloca total/30 al giorno
 # ---- Regole per FAMIGLIA di prodotto (match per parole chiave) ----
 # Ordinate: la PRIMA regola che combacia vince. Match sui TOKEN di handle+titolo

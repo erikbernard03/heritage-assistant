@@ -9,7 +9,7 @@ Formula net profit giornaliero (Fase 1, solo Shopify => spesa ads = 0):
       − costi_spedizione       ($7 × numero_ordini)
       − fee_pagamenti          (7.5% × revenue)
       − spesa_ads_totale       (Meta+Google+TikTok; in Fase 1 = 0)
-      − quota_costi_fissi      ($7.666 / 30 ≈ $255.53/giorno)  [attivabile/disattivabile]
+      − quota_costi_fissi      ($6.117 / 30 ≈ $203.90/giorno)  [attivabile/disattivabile]
 
 Si calcolano sia il net profit "operativo" (senza costi fissi) sia quello
 "netto" (con la quota costi fissi).

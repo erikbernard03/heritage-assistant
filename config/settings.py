@@ -66,7 +66,7 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 FEE_PAGAMENTI = 0.075          # 7.5% sul revenue
 SPEDIZIONE_PER_ORDINE = 7      # USD flat per ordine
 INCLUDI_COSTI_FISSI_IN_NET_PROFIT = True
-COSTI_FISSI_MENSILI = 7666     # USD (personale + software)
+COSTI_FISSI_MENSILI = 6117     # USD (personale + software)
 GIORNI_MESE_ALLOCAZIONE = 30   # quota giornaliera = COSTI_FISSI_MENSILI / 30
 
 # Soglie alert (Fase 2+ per la parte ads, qui solo predisposte)
