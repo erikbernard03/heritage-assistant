@@ -7,6 +7,7 @@ from datetime import date
 from src.metrics.profit import DailyMetrics
 from src.report import (
     aggregate_week,
+    build_last_month_report,
     build_month_report,
     build_weekly_report,
     format_report,
@@ -267,4 +268,84 @@ def test_reportmonth_no_data_message():
 
     text = build_month_report(store=_FakeStore(), today=date(2026, 6, 25))
     assert "Month-to-date report — 2026-06-01 → 2026-06-25" in text
+    assert "no data available yet" in text
+
+
+def test_reportlastmonth_full_previous_calendar_month():
+    """
+    /reportlastmonth: eseguito ad AGOSTO -> LUGLIO 1–31 completo. La query copre i
+    confini del mese solare e l'header mostra il range del calendario (non l'ultimo
+    giorno con dati). Aggregazione totals-based come /report7.
+    """
+    class _FakeStore:
+        def __init__(self):
+            self.range_args = None
+
+        def get_daily_metrics_range(self, start, end):
+            self.range_args = (start, end)
+            # 3 giorni reali di LUGLIO (con buchi); l'ultimo dato è 07-20, ma l'header
+            # deve arrivare fino al 07-31 (mese chiuso).
+            return [
+                {"day": d, "num_orders": 10, "revenue": 1000.0, "cogs_total": 100.0,
+                 "shipping_total": 70.0, "payment_fees": 75.0, "ads_spend": 0.0,
+                 "fixed_cost_daily": 203.90, "net_profit_operativo": 755.0,
+                 "net_profit_netto": 551.10, "store_cvr": 0.03}
+                for d in ("2026-07-01", "2026-07-10", "2026-07-20")
+            ]
+
+        def get_table_range(self, table, start, end):
+            return []
+
+    store = _FakeStore()
+    text = build_last_month_report(store=store, today=date(2026, 8, 12))
+    # query sui confini del mese SOLARE precedente (luglio 1–31)
+    assert store.range_args == ("2026-07-01", "2026-07-31")
+    # header sul range del calendario, NON sull'ultimo giorno con dati (07-20)
+    assert "Last month report — 2026-07-01 → 2026-07-31" in text
+    assert "*1) KEY METRICS*" in text
+    assert "*2) COST BREAKDOWN*" in text
+    assert "Revenue: *$3,000.00*" in text          # 1000 × 3 giorni
+    assert "Orders: *30*" in text
+    # costi fissi allocati = 203.90 × 3 giorni con dati = 611.70
+    assert "$611.70" in text
+
+
+def test_reportlastmonth_january_crosses_year_boundary():
+    """Eseguito a GENNAIO -> DICEMBRE dell'anno precedente (1–31)."""
+    class _FakeStore:
+        def __init__(self):
+            self.range_args = None
+
+        def get_daily_metrics_range(self, start, end):
+            self.range_args = (start, end)
+            return [
+                {"day": "2025-12-15", "num_orders": 4, "revenue": 400.0, "cogs_total": 40.0,
+                 "shipping_total": 28.0, "payment_fees": 30.0, "ads_spend": 0.0,
+                 "fixed_cost_daily": 203.90, "net_profit_operativo": 302.0,
+                 "net_profit_netto": 98.10, "store_cvr": 0.02},
+            ]
+
+        def get_table_range(self, table, start, end):
+            return []
+
+    store = _FakeStore()
+    text = build_last_month_report(store=store, today=date(2026, 1, 9))
+    assert store.range_args == ("2025-12-01", "2025-12-31")
+    assert "Last month report — 2025-12-01 → 2025-12-31" in text
+
+
+def test_reportlastmonth_february_non_leap_boundary():
+    """Eseguito a MARZO 2026 -> FEBBRAIO 2026 (non bisestile): 01 → 28."""
+    class _FakeStore:
+        def __init__(self):
+            self.range_args = None
+
+        def get_daily_metrics_range(self, start, end):
+            self.range_args = (start, end)
+            return []
+
+    store = _FakeStore()
+    text = build_last_month_report(store=store, today=date(2026, 3, 4))
+    assert store.range_args == ("2026-02-01", "2026-02-28")
+    assert "Last month report — 2026-02-01 → 2026-02-28" in text
     assert "no data available yet" in text

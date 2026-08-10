@@ -951,6 +951,36 @@ def build_month_report(store=None, today=None) -> str:
     return _render_multiday(daily_rows, store, header=header)
 
 
+def build_last_month_report(store=None, today=None) -> str:
+    """
+    Report MESE PRECEDENTE COMPLETO (mese solare intero prima di quello corrente):
+    es. eseguito ad agosto -> 1–31 luglio. Stessa aggregazione totals-based dei report
+    multi-giorno (ROAS/CPA/CVR dai totali di periodo; costi fissi = quota × giorni).
+
+    L'header mostra i confini del mese SOLARE (start → ultimo giorno del mese), non
+    l'ultimo giorno con dati: il mese è chiuso, quindi il range è quello del calendario.
+    """
+    from datetime import timedelta as _td
+
+    if store is None:
+        from src.db.supabase_client import SupabaseStore
+
+        store = SupabaseStore()
+    if today is None:
+        today = datetime.now(pytz.timezone(settings.TIMEZONE)).date()
+
+    first_this = today.replace(day=1)          # 1° del mese corrente
+    last_prev = first_this - _td(days=1)        # ultimo giorno del mese scorso
+    first_prev = last_prev.replace(day=1)       # 1° del mese scorso
+    start_iso, end_iso = first_prev.isoformat(), last_prev.isoformat()
+
+    daily_rows = store.get_daily_metrics_range(start_iso, end_iso)
+    header = f"📊 *Last month report — {start_iso} → {end_iso}* _(USD)_"
+    if not daily_rows:
+        return f"📊 *Last month report — {start_iso} → {end_iso}* — no data available yet."
+    return _render_multiday(daily_rows, store, header=header)
+
+
 if __name__ == "__main__":
     # Stampa a video il report di ieri (Shopify reale), senza Telegram.
     _, _text = build_daily_report(persist=False)
