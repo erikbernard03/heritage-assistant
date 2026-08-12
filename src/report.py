@@ -15,7 +15,7 @@ Nessun LLM tocca i numeri.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 import pytz
@@ -195,7 +195,7 @@ def _load_meta(day: str, persist: bool):
 
         meta = MetaConnector()
         currency = meta.get_account_currency()
-        raw = meta.get_daily_campaign_insights(day)
+        raw = _meta_rows_for_rome_day(meta, day)
         computed = compute_meta_metrics(day, raw, account_currency=currency)
 
         if persist and store is not None:
@@ -208,6 +208,84 @@ def _load_meta(day: str, persist: bool):
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
         print(f"[report] pull Meta saltata: {exc}")
         return None, [], 0.0
+
+
+def meta_bucketing_status(meta=None) -> dict:
+    """
+    Stato del bucketing Meta per la diagnostica (/meta_check): prova a leggere il fuso
+    dell'account e a fare una piccola pull ORARIA; riporta la modalità attiva.
+    Ritorna {mode, account_tz, target_tz, detail}. Nessuna scrittura.
+    """
+    from src.connectors.meta import MetaConnector
+
+    if meta is None:
+        meta = MetaConnector()
+    target_tz = settings.TIMEZONE
+    try:
+        account_tz = meta.get_account_timezone_name()
+    except Exception as exc:  # noqa: BLE001
+        return {"mode": "unknown", "account_tz": None, "target_tz": target_tz,
+                "detail": f"timezone_name non leggibile: {exc}"}
+
+    tz = pytz.timezone(target_tz)
+    y = (datetime.now(tz).date() - timedelta(days=1)).isoformat()
+    try:
+        # piccola sonda oraria su ieri (±1 giorno account) per capire se il breakdown c'è
+        since = (date.fromisoformat(y) - timedelta(days=1)).isoformat()
+        until = (date.fromisoformat(y) + timedelta(days=1)).isoformat()
+        rows = meta.get_hourly_campaign_insights(since, until)
+        has_hourly = any(meta.HOURLY_BREAKDOWN in r for r in rows)
+        if has_hourly:
+            return {"mode": "hourly→Rome", "account_tz": account_tz, "target_tz": target_tz,
+                    "detail": f"{len(rows)} righe orarie; ri-bucketate in giorni {target_tz}"}
+        return {"mode": "daily (account tz)", "account_tz": account_tz, "target_tz": target_tz,
+                "detail": "breakdown orario assente nelle righe -> fallback giornaliero"}
+    except Exception as exc:  # noqa: BLE001
+        return {"mode": "daily (account tz)", "account_tz": account_tz, "target_tz": target_tz,
+                "detail": f"pull oraria fallita -> fallback giornaliero: {exc}"}
+
+
+def _meta_rows_for_rome_day(meta, day: str) -> list[dict]:
+    """
+    Righe Meta (per campagna) per il giorno di calendario Europe/Rome `day`.
+
+    DEFAULT: breakdown ORARIO nel fuso dell'account (letto dinamicamente, es. Asia/Dubai)
+    ri-bucketato nei giorni di Roma (mezzanotte-mezzanotte di Roma, come Shopify). Si tira
+    UN GIORNO ACCOUNT IN PIÙ per lato ([day-1, day+1]) così nessuna ora va persa ai bordi.
+
+    FALLBACK graceful: se la pull oraria fallisce o il breakdown non è disponibile, si
+    ripiega sulla pull GIORNALIERA attuale (giorni del fuso account) e si logga un warning.
+
+    NB: con il re-bucketing i numeri differiranno LEGGERMENTE dalla vista giornaliera di
+    Ads Manager (che usa i giorni del fuso account, es. Dubai). È voluto e corretto: qui i
+    giorni Meta coincidono con quelli di Shopify/Europe/Rome.
+    """
+    from src.metrics.meta import rebucket_hourly_to_daily_rows
+
+    # ±1 giorno account attorno al giorno di Roma, per non perdere ore ai bordi.
+    d = date.fromisoformat(day)
+    since = (d - timedelta(days=1)).isoformat()
+    until = (d + timedelta(days=1)).isoformat()
+
+    try:
+        account_tz = meta.get_account_timezone_name()
+        hourly = meta.get_hourly_campaign_insights(since, until)
+        if hourly and any(meta.HOURLY_BREAKDOWN in r for r in hourly):
+            by_rome_day = rebucket_hourly_to_daily_rows(hourly, account_tz, settings.TIMEZONE)
+            print(
+                f"[report] Meta bucketing ORARIO→{settings.TIMEZONE}: account_tz={account_tz} "
+                f"· {len(hourly)} righe orarie [{since}→{until}] → giorno {day} "
+                f"({len(by_rome_day.get(day, []))} campagne)"
+            )
+            return by_rome_day.get(day, [])
+        print(
+            f"[report] ⚠️ Meta: breakdown orario non disponibile per [{since}→{until}] "
+            f"-> fallback pull GIORNALIERA (giorni fuso account) per {day}."
+        )
+    except Exception as exc:  # noqa: BLE001 — degrada al giornaliero
+        print(f"[report] ⚠️ Meta pull oraria fallita ({exc}) -> fallback giornaliero per {day}.")
+
+    return meta.get_daily_campaign_insights(day)
 
 
 def _fetch_tw_summary(start: str, end: str) -> Optional[dict]:

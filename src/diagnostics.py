@@ -182,6 +182,24 @@ def meta_diagnostic() -> str:
     except Exception as exc:  # noqa: BLE001
         out.append(f"❌ currency call FAILED: {exc}")
 
+    # 1b) modalità di bucketing giorni (orario→Roma vs giornaliero fuso account)
+    out.append("\n— Day bucketing —")
+    try:
+        from src.report import meta_bucketing_status
+
+        st = meta_bucketing_status(mc)
+        out.append(
+            f"Mode: {st['mode']} · account_tz: {st.get('account_tz')} → "
+            f"report_tz: {st.get('target_tz')}"
+        )
+        out.append(f"  {st.get('detail','')}")
+        if st["mode"].startswith("hourly"):
+            out.append(
+                "  ℹ️ I numeri differiranno leggermente da Ads Manager (giorni fuso account)."
+            )
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"⚠️ bucketing status non determinato: {exc}")
+
     # 2) insights ultimi 7 giorni, per giorno (include 'ieri')
     tz = pytz.timezone(settings.TIMEZONE)
     today = datetime.now(tz).date()
