@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
@@ -408,10 +408,43 @@ def _friendly_ai_error(exc: Exception) -> str:
     return f"❌ AI error: {exc}\n\n{det}"
 
 
+# Menu comandi Telegram (tasto "/" o "Menu"): (comando, descrizione breve in inglese).
+# Registrato all'avvio via bot.set_my_commands (vedi _post_init).
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("report", "Daily report (live pull)"),
+    ("report5", "Last 5 days aggregated"),
+    ("report7", "Last 7 days aggregated"),
+    ("reportmonth", "Month to date"),
+    ("reportlastmonth", "Full previous month"),
+    ("refresh_today", "Force re-pull today + yesterday"),
+    ("refresh_meta", "Re-bucket Meta for a date range"),
+    ("backfill", "Re-pull Shopify for a date range"),
+    ("pl", "Monthly P&L (year month)"),
+    ("meta_check", "Meta diagnostic"),
+    ("google_check", "Google diagnostic"),
+    ("tw_check", "Triple Whale diagnostic"),
+    ("klaviyo_check", "Klaviyo diagnostic"),
+]
+
+
+async def _post_init(app: Application) -> None:
+    """All'avvio: registra il menu comandi Telegram (tasto '/' / Menu)."""
+    try:
+        await app.bot.set_my_commands([BotCommand(c, d) for c, d in BOT_COMMANDS])
+        logger.info("Menu comandi Telegram registrato (%d comandi).", len(BOT_COMMANDS))
+    except Exception:  # noqa: BLE001 — non bloccare l'avvio del bot se fallisce
+        logger.exception("Impossibile registrare il menu comandi Telegram")
+
+
 def build_application() -> Application:
     if not settings.TELEGRAM_BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN non configurato (.env).")
-    app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .post_init(_post_init)
+        .build()
+    )
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("report7", cmd_report7))
