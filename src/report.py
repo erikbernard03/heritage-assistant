@@ -288,6 +288,80 @@ def _meta_rows_for_rome_day(meta, day: str) -> list[dict]:
     return meta.get_daily_campaign_insights(day)
 
 
+def refresh_meta_range(
+    start_iso: str, end_iso: str, max_days: int = 60, meta=None, store=None
+) -> list[tuple]:
+    """
+    Ri-bucketizza Meta per OGNI giorno (Europe/Rome) in [start_iso, end_iso] e
+    sovrascrive meta_daily + meta_campaigns. Serve a correggere lo storico dopo il
+    passaggio al bucketing ORARIO→Roma (i giorni Meta ora coincidono con Shopify/Roma).
+
+    EFFICIENTE: una SOLA pull oraria per l'intero intervallo (± 1 giorno account per lato,
+    così nessuna ora va persa ai bordi), poi ri-bucketing in giorni di Roma e upsert per
+    ogni giorno. Se la pull oraria fallisce o il breakdown non è disponibile, ripiega
+    per-giorno sul percorso standard (_load_meta), che ha il proprio fallback giornaliero.
+
+    Ritorna una lista (giorno, spesa_usd|'ERR', ordini|messaggio, modalità) per il riepilogo.
+
+    NB: i numeri differiranno LEGGERMENTE da Ads Manager (giorni fuso account, es. Dubai):
+    è voluto — qui i giorni Meta sono allineati a Europe/Rome.
+    """
+    from src.connectors.meta import MetaConnector
+    from src.db.supabase_client import SupabaseStore
+    from src.metrics.meta import compute_meta_metrics, rebucket_hourly_to_daily_rows
+
+    if not (settings.META_ACCESS_TOKEN and settings.META_AD_ACCOUNT_ID):
+        raise RuntimeError("Meta non configurato (META_ACCESS_TOKEN / META_AD_ACCOUNT_ID).")
+
+    d0 = date.fromisoformat(start_iso)
+    d1 = date.fromisoformat(end_iso)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days + 1 > max_days:
+        raise ValueError(f"Range troppo ampio (> {max_days} giorni).")
+
+    meta = meta or MetaConnector()
+    store = store or SupabaseStore()
+    currency = meta.get_account_currency()
+    days = [(d0 + timedelta(days=i)).isoformat() for i in range((d1 - d0).days + 1)]
+
+    # 1) tentativo BULK: una pull oraria per tutto l'intervallo (± 1 giorno account).
+    by_rome_day: Optional[dict] = None
+    try:
+        account_tz = meta.get_account_timezone_name()
+        since = (d0 - timedelta(days=1)).isoformat()
+        until = (d1 + timedelta(days=1)).isoformat()
+        hourly = meta.get_hourly_campaign_insights(since, until)
+        if hourly and any(meta.HOURLY_BREAKDOWN in r for r in hourly):
+            by_rome_day = rebucket_hourly_to_daily_rows(hourly, account_tz, settings.TIMEZONE)
+            print(
+                f"[refresh_meta] ORARIO→{settings.TIMEZONE}: account_tz={account_tz} · "
+                f"{len(hourly)} righe orarie [{since}→{until}] → {len(days)} giorni Roma."
+            )
+        else:
+            print("[refresh_meta] ⚠️ breakdown orario assente -> fallback per-giorno (_load_meta).")
+    except Exception as exc:  # noqa: BLE001 — degrada al per-giorno
+        print(f"[refresh_meta] ⚠️ pull oraria bulk fallita ({exc}) -> fallback per-giorno.")
+
+    out: list[tuple] = []
+    for day in days:
+        try:
+            if by_rome_day is not None:
+                rows = by_rome_day.get(day, [])
+                computed = compute_meta_metrics(day, rows, account_currency=currency)
+                store.upsert_meta_daily(computed)
+                store.upsert_meta_campaigns(computed)
+                out.append((day, round(computed.spend, 2), computed.orders, "hourly→Rome"))
+            else:
+                # fallback: percorso standard per-giorno (ri-bucketing orario con proprio fallback)
+                daily_dict, _camps, spend = _load_meta(day, persist=True)
+                orders = int((daily_dict or {}).get("orders") or 0)
+                out.append((day, round(spend, 2), orders, "per-day"))
+        except Exception as exc:  # noqa: BLE001
+            out.append((day, "ERR", str(exc)[:80], "-"))
+    return out
+
+
 def _fetch_tw_summary(start: str, end: str) -> Optional[dict]:
     """
     UNA pull del Summary Triple Whale per run. Ritorna il dict (condiviso da TikTok,

@@ -140,3 +140,75 @@ def test_rebucketed_rows_apply_fx_once_for_eur_account():
     # fx applicato UNA sola volta in compute_meta_metrics
     assert round(m.spend, 4) == round(10.0 * settings.EUR_TO_USD, 4)
     assert round(m.revenue, 4) == round(100.0 * settings.EUR_TO_USD, 4)
+
+
+# --------------------------------------------------------------------------- #
+# refresh_meta_range — ri-bucketing storico (bulk) con upsert per giorno
+# --------------------------------------------------------------------------- #
+class _FakeMeta:
+    """Connettore Meta fittizio: una pull oraria bulk, tz account = Asia/Dubai."""
+    HOURLY_BREAKDOWN = HOURLY_BREAKDOWN
+
+    def __init__(self, hourly):
+        self._hourly = hourly
+        self.hourly_calls = []
+
+    def get_account_currency(self):
+        return "USD"
+
+    def get_account_timezone_name(self):
+        return "Asia/Dubai"
+
+    def get_hourly_campaign_insights(self, since, until):
+        self.hourly_calls.append((since, until))
+        return self._hourly
+
+
+class _CaptureStore:
+    def __init__(self):
+        self.daily = {}
+        self.camps = {}
+
+    def upsert_meta_daily(self, computed):
+        self.daily[computed.day] = computed
+
+    def upsert_meta_campaigns(self, computed):
+        self.camps[computed.day] = list(computed.campaigns)
+
+
+def test_refresh_meta_range_bulk_rebuckets_and_upserts_each_day(monkeypatch):
+    monkeypatch.setattr("config.settings.META_ACCESS_TOKEN", "x")
+    monkeypatch.setattr("config.settings.META_AD_ACCOUNT_ID", "act_123")
+    from src.report import refresh_meta_range
+
+    # Un acquisto a Dubai 12/08 ora 01 -> Rome 11/08 ; e uno a Dubai 12/08 ora 14 -> Rome 12/08
+    hourly = [
+        _hrow("2026-08-12", 1, spend="5", clicks="3", orders=1, revenue=130.0),
+        _hrow("2026-08-12", 14, spend="7", clicks="4", orders=2, revenue=260.0),
+    ]
+    meta = _FakeMeta(hourly)
+    store = _CaptureStore()
+    result = refresh_meta_range("2026-08-11", "2026-08-12", meta=meta, store=store)
+
+    # una sola pull oraria bulk, con ±1 giorno account attorno all'intervallo
+    assert meta.hourly_calls == [("2026-08-10", "2026-08-13")]
+    # entrambi i giorni di Roma sono stati scritti
+    assert set(store.daily.keys()) == {"2026-08-11", "2026-08-12"}
+    assert store.daily["2026-08-11"].spend == 5.0 and store.daily["2026-08-11"].orders == 1
+    assert store.daily["2026-08-12"].spend == 7.0 and store.daily["2026-08-12"].orders == 2
+    # riepilogo: modalità hourly→Rome per ogni giorno
+    modes = {day: mode for (day, spend, orders, mode) in result}
+    assert modes == {"2026-08-11": "hourly→Rome", "2026-08-12": "hourly→Rome"}
+
+
+def test_refresh_meta_range_day_with_no_data_writes_zero_row(monkeypatch):
+    monkeypatch.setattr("config.settings.META_ACCESS_TOKEN", "x")
+    monkeypatch.setattr("config.settings.META_AD_ACCOUNT_ID", "act_123")
+    from src.report import refresh_meta_range
+
+    # dati solo per Rome 08-12: il 08-11 deve essere sovrascritto a zero (nessuna ora)
+    hourly = [_hrow("2026-08-12", 14, spend="7", orders=2, revenue=260.0)]
+    store = _CaptureStore()
+    refresh_meta_range("2026-08-11", "2026-08-12", meta=_FakeMeta(hourly), store=store)
+    assert store.daily["2026-08-11"].spend == 0.0 and store.daily["2026-08-11"].orders == 0
+    assert store.daily["2026-08-12"].spend == 7.0

@@ -318,6 +318,36 @@ async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.edit_text(f"❌ Backfill error: {exc}")
 
 
+async def cmd_refresh_meta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/refresh_meta START END (admin) -> ri-bucketizza Meta (orario→Roma) nel range e sovrascrive."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    args = context.args or []
+    start = args[0] if len(args) >= 1 else None
+    end = args[1] if len(args) >= 2 else start
+    if not start:
+        await update.message.reply_text("Usage: /refresh_meta YYYY-MM-DD [YYYY-MM-DD]")
+        return
+
+    msg = await update.message.reply_text(f"⏳ Re-bucketing Meta {start} → {end} (hourly→Rome)…")
+    try:
+        from src.report import refresh_meta_range
+
+        result = await asyncio.to_thread(refresh_meta_range, start, end)
+        lines = ["✅ Meta re-bucketed into Europe/Rome days (differs slightly from Ads Manager):"]
+        for row in result:
+            day, spend, orders, mode = row
+            if spend == "ERR":
+                lines.append(f"  • {day}: ❌ {orders}")
+            else:
+                lines.append(f"  • {day}: ${spend:,.2f} spend · {orders} orders · [{mode}]")
+        await msg.edit_text("\n".join(lines)[:3800])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nel refresh Meta")
+        await msg.edit_text(f"❌ refresh_meta error: {exc}")
+
+
 async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/audit YYYY-MM-DD (admin) -> scompone la revenue del giorno (tax/shipping/refund/boundary)."""
     if not _authorized(update):
@@ -365,7 +395,7 @@ def _friendly_ai_error(exc: Exception) -> str:
     """Messaggio chiaro per gli errori dell'AI (i comandi deterministici non la usano)."""
     msg = str(exc).lower()
     det = ("ℹ️ The deterministic commands don't use the AI and still work: "
-           "/report · /audit · /backfill · /refresh_today · /pl · "
+           "/report · /audit · /backfill · /refresh_today · /refresh_meta · /pl · "
            "/meta_check · /google_check · /tw_check · /klaviyo_check.")
     if "credit balance" in msg or "billing" in msg or "too low" in msg:
         return ("🤖 AI is unavailable: the Anthropic account is out of credits.\n"
@@ -395,6 +425,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("google_check", cmd_google_check))
     app.add_handler(CommandHandler("refresh_today", cmd_refresh_today))
     app.add_handler(CommandHandler("backfill", cmd_backfill))
+    app.add_handler(CommandHandler("refresh_meta", cmd_refresh_meta))
     app.add_handler(CommandHandler("audit", cmd_audit))
     # qualsiasi testo non-comando -> assistente AI
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
