@@ -75,8 +75,22 @@ def test_custom_range_single_day():
         "2026-06-05", "2026-06-05")
 
 
+def test_today_range_single_day():
+    assert periods.today_range(date(2026, 6, 24)) == ("2026-06-24", "2026-06-24")
+
+
+def test_yesterday_range_single_day():
+    assert periods.yesterday_range(date(2026, 6, 24)) == ("2026-06-23", "2026-06-23")
+
+
+def test_yesterday_range_crosses_month_boundary():
+    # 1° del mese -> ieri è l'ultimo giorno del mese precedente
+    assert periods.yesterday_range(date(2026, 6, 1)) == ("2026-05-31", "2026-05-31")
+
+
 def test_presets_keys_stable():
     # l'ordine/etichette dei preset è quello atteso dalla UI
     assert list(periods.PRESETS.keys()) == [
-        "Last 7 days", "This week", "This month", "Last month", "All time",
+        "Today", "Yesterday", "Last 7 days", "This week",
+        "This month", "Last month", "All time",
     ]

@@ -36,6 +36,18 @@ def rome_today(today: Optional[date] = None) -> date:
     return datetime.now(pytz.timezone(settings.TIMEZONE)).date()
 
 
+def today_range(today: Optional[date] = None) -> tuple[str, str]:
+    """Solo oggi (Europe/Rome): [today, today]."""
+    t = rome_today(today)
+    return t.isoformat(), t.isoformat()
+
+
+def yesterday_range(today: Optional[date] = None) -> tuple[str, str]:
+    """Solo ieri (Europe/Rome): [today-1, today-1]."""
+    y = rome_today(today) - timedelta(days=1)
+    return y.isoformat(), y.isoformat()
+
+
 def last_7_days(today: Optional[date] = None) -> tuple[str, str]:
     """Ultimi 7 giorni inclusi oggi: [today-6, today]."""
     t = rome_today(today)
@@ -79,6 +91,8 @@ def custom_range(start: date, end: date) -> tuple[str, str]:
 
 # Etichette -> funzione (per il selettore UI). Custom è gestito a parte (date picker).
 PRESETS = {
+    "Today": today_range,
+    "Yesterday": yesterday_range,
     "Last 7 days": last_7_days,
     "This week": this_week,
     "This month": this_month,
