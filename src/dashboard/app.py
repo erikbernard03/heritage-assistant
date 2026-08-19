@@ -21,7 +21,7 @@ from __future__ import annotations
 import hmac
 import os
 import sys
-from datetime import timedelta
+from datetime import date, timedelta
 
 # Streamlit lancia lo script direttamente (streamlit run src/dashboard/app.py), quindi
 # sys.path[0] è la cartella dello script (src/dashboard/), NON la root del repo: senza
@@ -108,6 +108,15 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
     )
     be_roas, be_cpa = breakeven or (None, None)
     days = sorted({r["day"] for r in daily_rows})
+
+    # Serie giornaliera break-even/AOV: serve un lookback PRIMA dell'inizio periodo, così
+    # anche i primi giorni hanno i loro 4 giorni precedenti (stessa formula del report).
+    from src.dashboard.monthly import daily_breakeven_series
+
+    lb_start = (date.fromisoformat(start_iso) - timedelta(days=20)).isoformat()
+    lookback_rows = store.get_daily_metrics_range(lb_start, end_iso)
+    be_series = daily_breakeven_series(lookback_rows, set(days))
+
     return {
         "metrics": {
             "num_orders": m.num_orders, "revenue": m.revenue, "aov": m.aov,
@@ -123,7 +132,44 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
         "breakeven": {"roas": be_roas, "cpa": be_cpa},
         "num_days": len(days),
         "daily_rows": sorted(daily_rows, key=lambda r: r["day"]),
+        "be_series": be_series,
     }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _compute_monthly() -> dict | None:
+    """
+    Vista MENSILE: un record per mese di calendario con dati. Riusa aggregate_period
+    (stessi totali di /report7) e le unità prodotto da product_units_daily.
+    """
+    from src.db.supabase_client import SupabaseStore
+    from src.dashboard.monthly import group_by_month, monthly_visitors, units_by_month
+    from src.report import aggregate_period
+
+    store = SupabaseStore()
+    today = periods.rome_today().isoformat()
+    all_rows = store.get_daily_metrics_range("2000-01-01", today)
+    if not all_rows:
+        return None
+
+    months: list[dict] = []
+    for month, rows in group_by_month(all_rows).items():
+        (m, meta_daily, _mc, _tk, google_daily,
+         klaviyo_daily, _kc, _be, _h) = aggregate_period(rows, store)
+        visitors, est = monthly_visitors(rows)
+        months.append({
+            "month": month,
+            "revenue": m.revenue, "orders": m.num_orders, "aov": m.aov,
+            "store_cvr": m.store_cvr, "visitors": visitors, "visitors_est": est,
+            "meta_roas": float((meta_daily or {}).get("roas") or 0.0),
+            "google_roas": float((google_daily or {}).get("roas") or 0.0),
+            "klaviyo_revenue": float((klaviyo_daily or {}).get("revenue") or 0.0),
+            "net_profit_operativo": m.net_profit_operativo,
+            "net_profit_netto": m.net_profit_netto,
+        })
+
+    units_rows = store.get_table_range("product_units_daily", "2000-01-01", today)
+    return {"months": months, "units_by_month": units_by_month(units_rows)}
 
 
 # --------------------------------------------------------------------------- #
@@ -270,33 +316,127 @@ def _render_trend(daily_rows: list[dict]) -> None:
     st.line_chart(df["Net profit (operating)"], color="#16a34a", height=220)
 
 
+def _render_breakeven_trends(be_series: list[dict]) -> None:
+    """Grafici giornalieri: AOV, break-even ROAS, break-even CPA (4-day rolling, come report)."""
+    if not be_series:
+        return
+    st.subheader("Daily trends — AOV & break-even")
+    df = pd.DataFrame(be_series).set_index("day")
+    st.caption("AOV ($/order)")
+    st.line_chart(df["aov"], color="#7c3aed", height=200)
+    st.caption("Break-even ROAS (×) — from each day's prior 4-day window")
+    st.line_chart(df["be_roas"], color="#ea580c", height=200)
+    st.caption("Break-even CPA ($)")
+    st.line_chart(df["be_cpa"], color="#0891b2", height=200)
+
+
+def _render_monthly(monthly: dict) -> None:
+    months = monthly["months"]
+    if not months:
+        st.info("No monthly data yet.")
+        return
+    st.subheader("Monthly overview")
+    df = pd.DataFrame([{
+        "Month": r["month"],
+        "Revenue": round(r["revenue"], 2),
+        "Orders": r["orders"],
+        "AOV": round(r["aov"], 2),
+        "Store CVR": _cvr(r["store_cvr"]),
+        "Visitors": f"{r['visitors']:,.0f}" + (" est." if r["visitors_est"] else ""),
+        "Meta ROAS": round(r["meta_roas"], 2),
+        "Google ROAS": round(r["google_roas"], 2),
+        "Klaviyo rev": round(r["klaviyo_revenue"], 2),
+        "Net profit (op)": round(r["net_profit_operativo"], 2),
+        "Net margin %": (round(r["net_profit_netto"] / r["revenue"] * 100, 1)
+                         if r["revenue"] else None),
+    } for r in months])
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+    bars = pd.DataFrame([{
+        "month": r["month"],
+        "Revenue": round(r["revenue"], 2),
+        "Net profit (op)": round(r["net_profit_operativo"], 2),
+    } for r in months]).set_index("month")
+    st.caption("Revenue & net profit by month")
+    st.bar_chart(bars, height=240)
+
+
+def _render_product_units_monthly(units_by_month: dict) -> None:
+    from src.metrics.product_units import PRODUCT_KEYS, PRODUCT_KEY_LABELS
+
+    st.subheader("Units sold per product / month")
+    if not units_by_month:
+        st.caption("No product-unit data yet — run /backfill to fill history.")
+        return
+    keys = [k for k, _ in PRODUCT_KEYS]
+    months = list(units_by_month.keys())
+
+    table_rows = []
+    for month in months:
+        um = units_by_month[month]
+        row = {"Month": month, "Total": sum(um.values())}
+        for k in keys:
+            row[PRODUCT_KEY_LABELS[k]] = um.get(k, 0)
+        table_rows.append(row)
+    st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+    # Barre IMPILATE: una colonna per famiglia prodotto (colonne tutte-zero rimosse).
+    stacked = pd.DataFrame(
+        {PRODUCT_KEY_LABELS[k]: [units_by_month[mn].get(k, 0) for mn in months] for k in keys},
+        index=months,
+    )
+    stacked = stacked.loc[:, (stacked.sum(axis=0) > 0)]
+    st.caption("Units per product (stacked)")
+    st.bar_chart(stacked, height=300)
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
+def _render_period_tab() -> None:
+    label, start_iso, end_iso = _select_period()
+    st.caption(f"**{label}** · {start_iso} → {end_iso} · USD · read-only (nightly data)")
+    try:
+        data = _compute_period(start_iso, end_iso)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not load data: {exc}")
+        return
+    if not data:
+        st.info("No data for the selected period yet.")
+        return
+
+    m = data["metrics"]
+    _render_kpis(m, data["breakeven"])
+    _render_trend(data["daily_rows"])
+    _render_breakeven_trends(data["be_series"])
+    _render_platforms(data)
+    _render_meta_campaigns(data["meta_campaigns"])
+    _render_cost_breakdown(m, data["num_days"])
+
+
+def _render_monthly_tab() -> None:
+    try:
+        monthly = _compute_monthly()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not load monthly data: {exc}")
+        return
+    if not monthly:
+        st.info("No monthly data yet.")
+        return
+    _render_monthly(monthly)
+    _render_product_units_monthly(monthly["units_by_month"])
+
+
 def main() -> None:
     if not _check_password():
         st.stop()
 
     st.title("📊 Heritage Ring")
-    label, start_iso, end_iso = _select_period()
-    st.caption(f"**{label}** · {start_iso} → {end_iso} · USD · read-only (nightly data)")
-
-    try:
-        data = _compute_period(start_iso, end_iso)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Could not load data: {exc}")
-        st.stop()
-
-    if not data:
-        st.info("No data for the selected period yet.")
-        st.stop()
-
-    m = data["metrics"]
-    _render_kpis(m, data["breakeven"])
-    _render_trend(data["daily_rows"])
-    _render_platforms(data)
-    _render_meta_campaigns(data["meta_campaigns"])
-    _render_cost_breakdown(m, data["num_days"])
+    tab_period, tab_monthly = st.tabs(["📅 Period", "🗓️ Monthly"])
+    with tab_period:
+        _render_period_tab()
+    with tab_monthly:
+        _render_monthly_tab()
 
     if st.button("🔄 Refresh data"):
         st.cache_data.clear()

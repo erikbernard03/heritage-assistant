@@ -49,6 +49,14 @@ class CogsResolver:
             for handle, cost in (self._raw.get(section) or {}).items():
                 self._handle_to_cost[handle.strip().lower()] = float(cost)
 
+        # Set di handle per famiglie note (usati dalla classificazione unità prodotto).
+        self.classic_ring_handles: set[str] = {
+            h.strip().lower() for h in (self._raw.get("classic_rings") or {})
+        }
+        self.bracelet_handles: set[str] = {
+            h.strip().lower() for h in (self._raw.get("bracelets") or {})
+        }
+
         # Regole per FAMIGLIA (ordinate): (lista_keyword_lowercase, costo).
         # Valutate tra il match esatto (handle/titolo) e il default.
         self._title_rules: list[tuple[list[str], float]] = []

@@ -82,6 +82,7 @@ class DailyMetrics:
     shipping_collected: float = 0.0     # spedizione premium pagata dal cliente
     tax_collected: float = 0.0          # IVA/tasse incassate
     store_cvr: float = 0.0              # CVR negozio (Shopify primario, TW fallback); frazione
+    store_sessions: Optional[int] = None  # sessioni/visitatori reali Shopify (None se non disp.)
     line_items: list[LineItemCost] = field(default_factory=list)
 
     @property
@@ -91,7 +92,7 @@ class DailyMetrics:
 
     def as_db_row(self) -> dict:
         """Riga per la tabella daily_metrics (tutto in USD)."""
-        return {
+        row = {
             "day": self.day,
             "num_orders": self.num_orders,
             "revenue": round(self.revenue, 2),
@@ -105,6 +106,11 @@ class DailyMetrics:
             "aov": round(self.aov, 2),
             "store_cvr": round(self.store_cvr, 6),
         }
+        # Colonna nullable (migration 008): la includo solo se disponibile, così i giorni
+        # senza sessioni reali non scrivono NULL e restano compatibili pre-migration.
+        if self.store_sessions is not None:
+            row["store_sessions"] = int(self.store_sessions)
+        return row
 
 
 def compute_daily_metrics(

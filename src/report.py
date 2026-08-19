@@ -122,6 +122,8 @@ def build_daily_report(
     shopify_cvr = _load_shopify_cvr(shop, window.day_str)
     tw_cvr = float(google_daily.get("store_cvr") or 0) if google_daily else 0.0
     metrics.store_cvr = shopify_cvr if shopify_cvr is not None else tw_cvr
+    # Visitatori reali (sessioni Shopify): None se scope read_reports mancante -> stima in dashboard
+    metrics.store_sessions = _load_shopify_sessions(shop, window.day_str)
 
     if persist:
         _persist(orders, handle_map, metrics)
@@ -147,6 +149,17 @@ def _load_shopify_cvr(shop, day: str) -> Optional[float]:
         return shop.get_session_conversion_rate(day)
     except Exception as exc:  # noqa: BLE001
         print(f"[report] Shopify CVR (sessions) non disponibile: {exc}")
+        return None
+
+
+def _load_shopify_sessions(shop, day: str) -> Optional[int]:
+    """Sessioni/visitatori reali Shopify per il giorno; None se scope mancante/non disp."""
+    if shop is None:
+        return None
+    try:
+        return shop.get_sessions(day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] Shopify sessions non disponibili: {exc}")
         return None
 
 
@@ -502,6 +515,17 @@ def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool):
         return None, []
 
 
+def _persist_product_units(store, metrics: DailyMetrics) -> None:
+    """Classifica i line item del giorno e salva le unità per prodotto (best-effort)."""
+    try:
+        from src.metrics.product_units import units_by_key_from_line_items
+
+        units = units_by_key_from_line_items(metrics.line_items)
+        store.upsert_product_units(metrics.day, units)
+    except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
+        print(f"[report] ⚠️ product_units non salvate per {metrics.day}: {exc}")
+
+
 def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics) -> None:
     """Salva su Supabase se configurato; non blocca il report in caso di assenza DB."""
     try:
@@ -511,6 +535,7 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         store.upsert_orders(orders, handle_map)
         store.upsert_line_items(metrics)
         store.upsert_daily_metrics(metrics)
+        _persist_product_units(store, metrics)
         print(
             f"[report] daily_metrics PERSISTED day={metrics.day} "
             f"orders={metrics.num_orders} revenue=${metrics.revenue:,.2f}"
@@ -575,6 +600,7 @@ def backfill_daily_metrics(
             store.upsert_orders(orders, handle_map)
             store.upsert_line_items(m)
             store.upsert_daily_metrics(m)
+            _persist_product_units(store, m)   # unità vendute per prodotto (Fase 5)
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
                 (w.day_str, m.num_orders, round(m.revenue, 2),

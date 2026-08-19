@@ -57,6 +57,28 @@ def parse_session_conversion_rate(gql: dict) -> Optional[float]:
     return (completed / sessions) if sessions > 0 else None
 
 
+def parse_sessions_count(gql: dict) -> Optional[int]:
+    """
+    Estrae il numero di SESSIONI (visitatori) dalla risposta GraphQL shopifyqlQuery.
+    None se dati non disponibili o accesso negato (scope read_reports mancante).
+    """
+    if gql.get("errors"):
+        return None
+    node = (gql.get("data") or {}).get("shopifyqlQuery") or {}
+    if node.get("parseErrors"):
+        return None
+    table = node.get("tableData") or {}
+    cols = [c.get("name") for c in table.get("columns", [])]
+    rows = table.get("rows") or []
+    if not rows:
+        return None
+    rec = dict(zip(cols, rows[0]))
+    try:
+        return int(float(rec.get("sessions")))
+    except (TypeError, ValueError):
+        return None
+
+
 class ShopifyError(RuntimeError):
     """Errore generico del connettore Shopify."""
 
@@ -250,3 +272,12 @@ class ShopifyConnector:
         )
         data = self.shopifyql(ql)
         return parse_session_conversion_rate(data)
+
+    def get_sessions(self, day: str) -> Optional[int]:
+        """
+        VISITATORI reali (sessioni Shopify) per il giorno `day` (YYYY-MM-DD).
+        Stesso percorso ShopifyQL della CVR (richiede scope read_reports): None se non
+        disponibile / accesso negato -> la dashboard stimerà i visitatori (ordini÷CVR).
+        """
+        ql = f"FROM sessions SHOW sessions SINCE {day} UNTIL {day}"
+        return parse_sessions_count(self.shopifyql(ql))

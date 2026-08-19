@@ -98,6 +98,22 @@ class SupabaseStore:
         """Upsert della riga giornaliera (chiave = day)."""
         self.client.table("daily_metrics").upsert(metrics.as_db_row()).execute()
 
+    # -------------------------------------------------- product units (Fase 5)
+    def upsert_product_units(self, day: str, units_by_key: dict[str, int]) -> int:
+        """
+        Upsert delle unità vendute per prodotto del giorno `day` (chiave = day+product_key).
+        Sovrascrive le righe del giorno (idempotente). units_by_key: {product_key: units}.
+        """
+        rows = [
+            {"day": day, "product_key": key, "units": int(units)}
+            for key, units in (units_by_key or {}).items()
+            if int(units) != 0
+        ]
+        if not rows:
+            return 0
+        self.client.table("product_units_daily").upsert(rows).execute()
+        return len(rows)
+
     # ----------------------------------------------------- letture (read-only)
     def get_recent_daily_metrics(self, days: int = 14) -> list[dict]:
         """Ultime N righe di daily_metrics (più recenti prima)."""
@@ -151,6 +167,7 @@ class SupabaseStore:
     _RANGE_TABLES = {
         "daily_metrics", "meta_daily", "meta_campaigns", "tiktok_daily",
         "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
+        "product_units_daily",
     }
 
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:
