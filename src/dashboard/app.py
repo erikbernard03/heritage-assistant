@@ -19,13 +19,24 @@ la dashboard resta bloccata.
 from __future__ import annotations
 
 import hmac
+import os
+import sys
 from datetime import timedelta
 
-import pandas as pd
-import streamlit as st
+# Streamlit lancia lo script direttamente (streamlit run src/dashboard/app.py), quindi
+# sys.path[0] è la cartella dello script (src/dashboard/), NON la root del repo: senza
+# questo, gli import di progetto (config, src.*) falliscono con ModuleNotFoundError.
+# Aggiungiamo la ROOT del repo (…/heritage-assistant) a sys.path PRIMA di ogni import di
+# progetto. Indipendente dalla working directory (usa __file__, non os.getcwd()).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-from config import settings
-from src.dashboard import periods
+import pandas as pd  # noqa: E402
+import streamlit as st  # noqa: E402
+
+from config import settings  # noqa: E402
+from src.dashboard import periods  # noqa: E402
 
 st.set_page_config(
     page_title="Heritage Ring · Dashboard",
