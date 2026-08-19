@@ -562,7 +562,11 @@ def backfill_daily_metrics(
     /backfill riscrive davvero cogs_total con i nuovi costi. Azzeriamo anche la cache
     del singleton, così i report successivi nello stesso processo vedono i nuovi valori.
 
-    Ritorna una lista (giorno, ordini|'ERR', revenue, cogs_total, cogs_per_order)
+    VISITATORI reali: per ogni giorno tira anche le sessioni Shopify (ShopifyQL FROM
+    sessions, scope read_reports). Se lo scope manca, store_sessions resta None e la
+    dashboard stima i visitatori (ordini÷CVR).
+
+    Ritorna una lista (giorno, ordini|'ERR', revenue, cogs_total, cogs_per_order, sessions)
     (o (giorno, 'ERR', messaggio) sugli errori) per il riepilogo.
     """
     from datetime import date as _date, timedelta as _td
@@ -597,6 +601,9 @@ def backfill_daily_metrics(
             m = compute_daily_metrics(
                 w.day_str, orders, handle_map, resolver=resolver, ads_spend=0.0
             )
+            # Visitatori reali (sessioni Shopify) del giorno: None se scope read_reports
+            # mancante -> la colonna resta NULL e la dashboard stima (ordini÷CVR).
+            m.store_sessions = _load_shopify_sessions(shop, w.day_str)
             store.upsert_orders(orders, handle_map)
             store.upsert_line_items(m)
             store.upsert_daily_metrics(m)
@@ -604,7 +611,7 @@ def backfill_daily_metrics(
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
                 (w.day_str, m.num_orders, round(m.revenue, 2),
-                 round(m.cogs_total, 2), round(cogs_per_order, 2))
+                 round(m.cogs_total, 2), round(cogs_per_order, 2), m.store_sessions)
             )
         except Exception as exc:  # noqa: BLE001
             out.append((w.day_str, "ERR", str(exc)[:80]))

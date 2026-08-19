@@ -230,12 +230,17 @@ class _FakeShop:
                             "title": "Personalized Gold Plated Signet Ring", "quantity": 1}],
         }]
 
+    def get_sessions(self, day):
+        # sessioni reali Shopify (scope read_reports disponibile nel fake)
+        return 440
+
 
 class _CaptureStore:
     """Cattura le righe daily_metrics scritte dal backfill."""
 
     def __init__(self):
         self.written = {}
+        self.units = {}
 
     def upsert_orders(self, orders, handle_map):
         pass
@@ -245,6 +250,9 @@ class _CaptureStore:
 
     def upsert_daily_metrics(self, metrics):
         self.written[metrics.day] = metrics
+
+    def upsert_product_units(self, day, units_by_key):
+        self.units[day] = dict(units_by_key)
 
 
 def test_backfill_recomputes_cogs_from_current_config():
@@ -271,8 +279,29 @@ def test_backfill_recomputes_cogs_from_current_config():
     # cogs_total scritto = costo CORRENTE del round signet (12), non un valore stale.
     m = store.written["2026-06-24"]
     assert round(m.cogs_total, 2) == 12.0
-    # il riepilogo restituito riporta cogs_total + cogs/order
-    day, orders, rev, cogs, cogs_po = result[0]
-    assert orders == 1 and cogs == 12.0 and cogs_po == 12.0
+    # visitatori reali (sessioni Shopify) salvati sul giorno
+    assert m.store_sessions == 440
+    # unità prodotto classificate e salvate (round signet)
+    assert store.units["2026-06-24"] == {"gold_signet_round": 1}
+    # il riepilogo restituito riporta cogs_total + cogs/order + sessions
+    day, orders, rev, cogs, cogs_po, sessions = result[0]
+    assert orders == 1 and cogs == 12.0 and cogs_po == 12.0 and sessions == 440
     # il singleton è stato invalidato dal backfill (nuovo oggetto al prossimo accesso)
     assert cl.get_resolver() is not warmed
+
+
+def test_backfill_sessions_none_when_scope_missing():
+    """Se le sessioni Shopify non sono disponibili (scope mancante), store_sessions=None
+    e il riepilogo riporta sessions=None (la dashboard stimerà i visitatori)."""
+    from src.report import backfill_daily_metrics
+
+    class _NoSessionsShop(_FakeShop):
+        def get_sessions(self, day):
+            return None                      # scope read_reports mancante
+
+    store = _CaptureStore()
+    result = backfill_daily_metrics(
+        "2026-06-24", "2026-06-24", shop=_NoSessionsShop(), store=store
+    )
+    assert store.written["2026-06-24"].store_sessions is None
+    assert result[0][5] is None              # sessions nel tuple

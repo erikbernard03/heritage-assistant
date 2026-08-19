@@ -303,15 +303,23 @@ async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         result = await asyncio.to_thread(backfill_daily_metrics, start, end)
         lines = ["✅ Backfill done (Shopify-only, COGS recomputed from current config):"]
+        real_sessions = False
         for row in result:
             if row[1] == "ERR":
                 lines.append(f"  • {row[0]}: ❌ {row[2]}")
             else:
-                day, orders, rev, cogs, cogs_po = row
+                day, orders, rev, cogs, cogs_po, sessions = row
+                vis = f"{sessions:,} visitors" if sessions is not None else "visitors n/a"
+                if sessions is not None:
+                    real_sessions = True
                 lines.append(
                     f"  • {day}: {orders} orders · ${rev:,.2f} · "
-                    f"COGS ${cogs:,.2f} (${cogs_po:,.2f}/order)"
+                    f"COGS ${cogs:,.2f} (${cogs_po:,.2f}/order) · {vis}"
                 )
+        lines.append(
+            "🟢 Real Shopify sessions filled (read_reports OK)." if real_sessions
+            else "🟡 Visitors n/a — read_reports scope missing; dashboard will estimate."
+        )
         await msg.edit_text("\n".join(lines)[:3800])
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel backfill")
