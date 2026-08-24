@@ -403,6 +403,101 @@ def google_diagnostic() -> str:
     return _scrub("\n".join(out), settings.TRIPLEWHALE_API_KEY)
 
 
+# Scope Admin API attesi dall'app (vedi shopify.app.toml).
+_SHOPIFY_NEEDED_SCOPES = [
+    "read_orders", "read_all_orders", "read_products",
+    "read_fulfillments", "read_inventory", "read_reports",
+]
+
+
+def shopify_diagnostic() -> str:
+    """
+    Diagnostica LIVE Shopify (sola lettura): mostra gli scope EFFETTIVAMENTE concessi al
+    token corrente e fa due prove funzionali — ordini oltre i 60 giorni (read_all_orders)
+    e sessioni/visitatori (read_reports). Nessun segreto in output (client_id mascherato,
+    token mai stampato).
+    """
+    out: list[str] = ["🔎 Shopify diagnostic (read-only)"]
+    out.append(
+        f"Store: {settings.SHOPIFY_STORE or '(EMPTY)'} · "
+        f"client_id: {_mask(settings.SHOPIFY_CLIENT_ID)} · api {settings.SHOPIFY_API_VERSION}"
+    )
+    if not (settings.SHOPIFY_STORE and settings.SHOPIFY_CLIENT_ID
+            and settings.SHOPIFY_CLIENT_SECRET):
+        out.append("\n❌ Shopify credentials not set in this environment.")
+        return "\n".join(out)
+
+    from src.connectors.shopify import ShopifyConnector
+
+    shop = ShopifyConnector()
+
+    # 1) scope concessi (dal grant client_credentials, campo `scope`)
+    out.append("\n— Granted Admin API scopes (live token) —")
+    try:
+        granted = set(shop.get_granted_scopes())
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ could not obtain token / scopes: {exc}")
+        return "\n".join(out)
+    for s in _SHOPIFY_NEEDED_SCOPES:
+        out.append(f"  {'✅' if s in granted else '❌'} {s}")
+    extra = sorted(granted - set(_SHOPIFY_NEEDED_SCOPES))
+    if extra:
+        out.append(f"  (other granted: {', '.join(extra)})")
+
+    tz = pytz.timezone(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+
+    def _count_orders(d):
+        start = tz.localize(datetime.combine(d, time.min))
+        return len(shop.get_orders(start, start + timedelta(days=1)))
+
+    # 2) prova ordini: ieri (recente) + ~75 giorni fa (oltre i 60gg = read_all_orders)
+    out.append("\n— Orders probe —")
+    try:
+        y = today - timedelta(days=1)
+        out.append(f"  {y} (recent): {_count_orders(y)} orders")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"  ❌ recent orders call failed: {exc}")
+    try:
+        old = today - timedelta(days=75)
+        n_old = _count_orders(old)
+        if n_old > 0:
+            flag = "✅ read_all_orders is working (returns >60-day orders)"
+        else:
+            flag = "⚠️ 0 — no orders that day OR read_all_orders still missing"
+        out.append(f"  {old} (>60 days): {n_old} orders — {flag}")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"  ❌ >60-day orders call failed: {exc}")
+
+    # 3) prova sessioni/visitatori (read_reports, ShopifyQL FROM sessions)
+    out.append("\n— Sessions / visitors probe (read_reports) —")
+    try:
+        y = today - timedelta(days=1)
+        sess = shop.get_sessions(y.isoformat())
+        if sess is not None:
+            out.append(f"  ✅ real Shopify sessions for {y}: {sess:,}")
+        else:
+            out.append(
+                "  ⚠️ sessions n/a — read_reports missing/denied (dashboard will estimate)."
+            )
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"  ❌ sessions call failed: {exc}")
+
+    # 4) verdetto sui due scope target
+    missing = [s for s in ("read_all_orders", "read_reports") if s not in granted]
+    if missing:
+        out.append(
+            f"\n➡️ Missing: {', '.join(missing)}. Release a new app version with these "
+            "scopes and re-approve the app on the store, then /backfill."
+        )
+    else:
+        out.append(
+            "\n✅ read_all_orders + read_reports granted — /backfill can restore old "
+            "orders and fill real visitors."
+        )
+    return "\n".join(out)
+
+
 # --------------------------------------------------------------------------- #
 # Audit di un singolo giorno: confronto report-revenue vs subtotal/tax/shipping,
 # refund e ordini al confine di mezzanotte (Europe/Rome).

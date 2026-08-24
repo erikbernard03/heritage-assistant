@@ -21,6 +21,7 @@ EXPECTED = [
     ("refresh_meta", "Re-bucket Meta for a date range"),
     ("backfill", "Re-pull Shopify for a date range"),
     ("pl", "Monthly P&L (year month)"),
+    ("shopify_check", "Shopify scopes + orders/sessions probe"),
     ("meta_check", "Meta diagnostic"),
     ("google_check", "Google diagnostic"),
     ("tw_check", "Triple Whale diagnostic"),

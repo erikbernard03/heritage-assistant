@@ -110,6 +110,7 @@ class ShopifyConnector:
 
         self._access_token: Optional[str] = None
         self._token_expiry: float = 0.0
+        self._granted_scopes: list[str] = []
         self._session = requests.Session()
 
     # ------------------------------------------------------------------ auth
@@ -136,11 +137,33 @@ class ShopifyConnector:
         token = data.get("access_token")
         if not token:
             raise ShopifyError(f"Risposta token senza access_token: {data}")
+        # Gli scope EFFETTIVAMENTE concessi arrivano nel campo `scope` del grant.
+        self._granted_scopes = [
+            s.strip() for s in (data.get("scope") or "").split(",") if s.strip()
+        ]
         # Rinnova ~5 minuti prima della scadenza per sicurezza.
         expires_in = int(data.get("expires_in", 3600))
         self._token_expiry = time.time() + max(expires_in - 300, 60)
         self._access_token = token
         return token
+
+    def get_granted_scopes(self) -> list[str]:
+        """
+        Scope Admin API EFFETTIVAMENTE concessi al token corrente (dal grant, campo
+        `scope`). Se assenti, li chiede all'endpoint /admin/oauth/access_scopes.json.
+        Serve a /shopify_check per confermare read_all_orders / read_reports.
+        """
+        self._token()  # assicura il fetch del token (popola _granted_scopes)
+        if self._granted_scopes:
+            return self._granted_scopes
+        try:
+            url = f"https://{self.store}/admin/oauth/access_scopes.json"
+            resp = self._request("GET", url)
+            items = (resp.json() or {}).get("access_scopes") or []
+            self._granted_scopes = [it.get("handle") for it in items if it.get("handle")]
+        except Exception:  # noqa: BLE001 — best effort
+            pass
+        return self._granted_scopes
 
     def _token(self) -> str:
         if not self._access_token or time.time() >= self._token_expiry:
