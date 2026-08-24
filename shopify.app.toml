@@ -14,8 +14,15 @@ application_url = "https://fx8bnw-ix.myshopify.com"
 embedded = false
 
 [access_scopes]
-# SOLO lettura. read_reports serve per la CVR di negozio (ShopifyQL: FROM sessions).
-scopes = "read_orders,read_products,read_fulfillments,read_inventory,read_reports"
+# SOLO lettura.
+# - read_reports:    CVR di negozio + sessioni/visitatori reali (ShopifyQL: FROM sessions).
+# - read_all_orders: ordini OLTRE i 60 giorni (senza, l'API restituisce solo gli ultimi
+#                    60 giorni -> il backfill di date più vecchie tornava a 0 ordini).
+#                    Va SEMPRE insieme a read_orders (lo estende, non lo sostituisce).
+#                    App custom/single-store: nessuna richiesta speciale a Shopify, basta
+#                    ri-approvare all'installazione (le app pubbliche/distribuite invece
+#                    devono compilare il form di richiesta read_all_orders).
+scopes = "read_orders,read_all_orders,read_products,read_fulfillments,read_inventory,read_reports"
 
 [auth]
 redirect_urls = [

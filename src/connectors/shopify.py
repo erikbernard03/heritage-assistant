@@ -7,7 +7,10 @@ scambia (client_id + client_secret) per un access token a runtime; il token NON 
 copiabile dalla UI ed è a vita breve, quindi viene messo in cache e rinnovato.
 
 Scope Admin API necessari (da abilitare sull'app + installare l'app sullo store):
-  read_orders, read_products, read_fulfillments, read_inventory
+  read_orders, read_all_orders, read_products, read_fulfillments, read_inventory,
+  read_reports
+  - read_all_orders: ordini oltre i 60 giorni (backfill storico).
+  - read_reports:    ShopifyQL FROM sessions (CVR + visitatori reali).
 
 Valuta: lo store opera in USD => i valori Shopify sono già in USD (valuta base).
 Nessun LLM tocca questi numeri.
