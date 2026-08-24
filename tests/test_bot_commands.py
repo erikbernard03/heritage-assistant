@@ -10,6 +10,8 @@ pytest.importorskip("telegram")
 
 
 EXPECTED = [
+    ("today", "Today so far (live intraday)"),
+    ("yesterday", "Yesterday (live single-day)"),
     ("report", "Daily report (live pull)"),
     ("report5", "Last 5 days aggregated"),
     ("report7", "Last 7 days aggregated"),

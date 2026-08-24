@@ -29,7 +29,9 @@ from src.report import (
     build_last_month_report,
     build_month_report,
     build_monthly_pl,
+    build_today_snapshot,
     build_weekly_report,
+    build_yesterday_snapshot,
 )
 
 logging.basicConfig(
@@ -51,6 +53,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Heritage Ring · AI Assistant (Phase 1 — Shopify).\n\n"
         "Commands:\n"
+        "• /today — today so far (live intraday snapshot)\n"
+        "• /yesterday — yesterday (live single-day snapshot)\n"
         "• /report — yesterday's Shopify report\n"
         "• /report7 — aggregated last-7-days report\n"
         "• /report5 — aggregated last-5-days report\n"
@@ -74,6 +78,34 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nella generazione del report")
         await msg.edit_text(f"❌ Report error: {exc}")
+
+
+async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/today -> snapshot intraday di OGGI (live, mai da cache)."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    msg = await update.message.reply_text("⏳ Pulling today so far (live)…")
+    try:
+        text = await asyncio.to_thread(build_today_snapshot)
+        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nello snapshot /today")
+        await msg.edit_text(f"❌ Today error: {exc}")
+
+
+async def cmd_yesterday(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/yesterday -> snapshot del giorno di ieri completo (live, mai da cache)."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    msg = await update.message.reply_text("⏳ Pulling yesterday (live)…")
+    try:
+        text = await asyncio.to_thread(build_yesterday_snapshot)
+        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nello snapshot /yesterday")
+        await msg.edit_text(f"❌ Yesterday error: {exc}")
 
 
 async def cmd_report7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -419,6 +451,8 @@ def _friendly_ai_error(exc: Exception) -> str:
 # Menu comandi Telegram (tasto "/" o "Menu"): (comando, descrizione breve in inglese).
 # Registrato all'avvio via bot.set_my_commands (vedi _post_init).
 BOT_COMMANDS: list[tuple[str, str]] = [
+    ("today", "Today so far (live intraday)"),
+    ("yesterday", "Yesterday (live single-day)"),
     ("report", "Daily report (live pull)"),
     ("report5", "Last 5 days aggregated"),
     ("report7", "Last 7 days aggregated"),
@@ -454,6 +488,8 @@ def build_application() -> Application:
         .build()
     )
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("today", cmd_today))
+    app.add_handler(CommandHandler("yesterday", cmd_yesterday))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("report7", cmd_report7))
     app.add_handler(CommandHandler("report5", cmd_report5))

@@ -65,13 +65,24 @@ def refresh_today_and_yesterday() -> str:
     return y_text
 
 
-def build_daily_report(
-    window: Optional[DayWindow] = None,
-    persist: bool = True,
-) -> tuple[DailyMetrics, str]:
-    """Costruisce le metriche + il testo del report per la finestra indicata (default: ieri)."""
-    window = window or yesterday_window()
+@dataclass
+class GatheredDay:
+    """Tutti i dati LIVE di un giorno (metriche + piattaforme), pronti per il rendering."""
+    metrics: DailyMetrics
+    meta_daily: Optional[dict]
+    meta_campaigns: list
+    tiktok_daily: Optional[dict]
+    tiktok_campaigns: list
+    google_daily: Optional[dict]
+    klaviyo_daily: Optional[dict]
+    klaviyo_campaigns: list
 
+
+def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
+    """
+    Esegue TUTTe le pull live per la finestra e calcola le metriche deterministiche.
+    Condiviso da build_daily_report e dagli snapshot /today e /yesterday (stessi numeri).
+    """
     # Shopify: se fallisce/va in timeout, si degrada (0 ordini) e il report parte comunque.
     shop = None
     try:
@@ -87,11 +98,11 @@ def build_daily_report(
         o["_day_rome"] = window.day_str
 
     # UNA sola pull del Summary Triple Whale per run: lo stesso oggetto dict alimenta
-    # TikTok, Google e la CVR di negozio. Niente cache-by-key (che poteva non combaciare):
-    # passiamo direttamente il dict. Tra run diversi si ri-tira sempre (no stale).
+    # TikTok, Google e la CVR di negozio. Il todayHour è impostato all'ora corrente Rome
+    # dal connettore, quindi per OGGI i valori sono "finora".
     tw_summary = _fetch_tw_summary(window.start.date().isoformat(), window.day_str)
 
-    # Meta (Fase 2): pull insights del giorno; spesa in USD. Sempre UPSERT (overwrite).
+    # Meta (Fase 2): insights del giorno via bucketing ORARIO→Roma (per OGGI = ore finora).
     meta_daily, meta_campaigns, meta_spend = _load_meta(window.day_str, persist=persist)
 
     # TikTok via Triple Whale (Fase 3): SOLO TikTok. Spesa sottratta dal net profit.
@@ -128,13 +139,142 @@ def build_daily_report(
     if persist:
         _persist(orders, handle_map, metrics)
 
+    return GatheredDay(
+        metrics=metrics, meta_daily=meta_daily, meta_campaigns=meta_campaigns,
+        tiktok_daily=tiktok_daily, tiktok_campaigns=tiktok_campaigns,
+        google_daily=google_daily, klaviyo_daily=klaviyo_daily,
+        klaviyo_campaigns=klaviyo_campaigns,
+    )
+
+
+def build_daily_report(
+    window: Optional[DayWindow] = None,
+    persist: bool = True,
+) -> tuple[DailyMetrics, str]:
+    """Costruisce le metriche + il testo del report per la finestra indicata (default: ieri)."""
+    window = window or yesterday_window()
+    g = _gather_day(window, persist=persist)
+
     # Break-even ROAS/CPA dalla media dei 4 giorni PRECEDENTI (da daily_metrics).
     breakeven = _load_breakeven(window.day_str)
 
-    return metrics, format_report(
-        metrics, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
-        tiktok_daily, tiktok_campaigns, google_daily, breakeven=breakeven,
+    return g.metrics, format_report(
+        g.metrics, g.meta_daily, g.meta_campaigns, g.klaviyo_daily, g.klaviyo_campaigns,
+        g.tiktok_daily, g.tiktok_campaigns, g.google_daily, breakeven=breakeven,
     )
+
+
+def _own_day_breakeven(m: DailyMetrics):
+    """Break-even (ROAS, CPA) dai NUMERI DEL GIORNO STESSO (non finestra 4 giorni).
+    (None, None) se 0 ordini -> la vista mostra 'n/a'."""
+    from src.metrics.profit import compute_breakeven
+
+    return compute_breakeven([{
+        "revenue": m.revenue, "num_orders": m.num_orders, "cogs_total": m.cogs_total,
+    }])
+
+
+def build_today_snapshot(now: Optional[datetime] = None) -> str:
+    """
+    Snapshot INTRADAY di OGGI (mezzanotte Roma → ora), tirato LIVE, mai da cache.
+    NON persiste (dato parziale: non deve inquinare daily_metrics). Break-even dai
+    numeri di oggi. Attribuzione ads provvisoria (revenue/ROAS si assestano dopo).
+    """
+    tz = pytz.timezone(settings.TIMEZONE)
+    now = now.astimezone(tz) if now else datetime.now(tz)
+    today = now.date()
+    g = _gather_day(day_window(today), persist=False)
+    header = (
+        f"📊 *Today so far — {today.isoformat()} {now.strftime('%H:%M')} Rome* _(USD)_"
+    )
+    return format_snapshot(g, _own_day_breakeven(g.metrics), header, provisional=True)
+
+
+def build_yesterday_snapshot(now: Optional[datetime] = None) -> str:
+    """
+    Snapshot del giorno di IERI COMPLETO (mezzanotte→mezzanotte), tirato LIVE ad ogni
+    chiamata. Persiste (giorno canonico completo: refresh utile). Break-even dai numeri
+    di ieri stesso.
+    """
+    tz = pytz.timezone(settings.TIMEZONE)
+    now = now.astimezone(tz) if now else datetime.now(tz)
+    yday = (now - timedelta(days=1)).date()
+    g = _gather_day(day_window(yday), persist=True)
+    header = f"📊 *Yesterday — {yday.isoformat()}* _(USD)_"
+    return format_snapshot(g, _own_day_breakeven(g.metrics), header, provisional=False)
+
+
+def format_snapshot(
+    g: "GatheredDay", breakeven, header: str, provisional: bool = False
+) -> str:
+    """
+    Versione COMPATTA del layout a 3 sezioni per gli snapshot /today e /yesterday.
+    Break-even dai numeri del giorno stesso (passato in `breakeven`).
+    """
+    m = g.metrics
+    be_roas, be_cpa = breakeven or (None, None)
+    cogs_po = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
+    gross = m.revenue - m.cogs_total
+
+    out: list[str] = [header]
+
+    # ---- 1) KEY METRICS (compatto) ----
+    out.append("\n*1) KEY METRICS*")
+    out.append(f"💰 Revenue: *${m.revenue:,.2f}* · 🛒 Orders: *{m.num_orders}*")
+    out.append(f"🧾 AOV: ${m.aov:,.2f}")
+    out.append(f"🏷️ COGS: ${m.cogs_total:,.2f} (${cogs_po:,.2f}/order)")
+    out.append(f"📦 Gross profit (rev − COGS): *${gross:,.2f}*")
+    out.append(
+        f"💵 Net profit — operating *${m.net_profit_operativo:,.2f}* · "
+        f"net *${m.net_profit_netto:,.2f}*"
+    )
+    roas_s = f"{be_roas:,.2f}x" if be_roas else "n/a"
+    cpa_s = f"${be_cpa:,.2f}" if be_cpa is not None else "n/a"
+    out.append(f"⚖️ Break-even ROAS: {roas_s} · CPA: {cpa_s} (own day)")
+    prov = " · provisional" if provisional else ""
+    for line in (
+        _roas_cpa_line("📣", "Meta", g.meta_daily),
+        _roas_cpa_line("🎵", "TikTok", g.tiktok_daily),
+        _roas_cpa_line("🔎", "Google", g.google_daily),
+    ):
+        if line:
+            out.append(line + prov)
+    if g.klaviyo_daily:
+        kla_rev = float(g.klaviyo_daily.get("revenue") or 0)
+        out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
+
+    # ---- 2) COST BREAKDOWN ----
+    out.append("\n*2) COST BREAKDOWN*")
+    out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
+    out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
+    out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
+    if m.ads_spend > 0:
+        out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")
+    if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
+        out.append(f"   • Fixed-costs allocation (full day): −${m.fixed_cost_daily:,.2f}")
+
+    # ---- 3) AD PLATFORMS (compatto: una riga per piattaforma) ----
+    out.append("\n*3) AD PLATFORMS*")
+    plat: list[str] = []
+    for emoji, name, d in (
+        ("📣", "Meta", g.meta_daily),
+        ("🎵", "TikTok", g.tiktok_daily),
+        ("🔎", "Google", g.google_daily),
+    ):
+        if d:
+            plat.append(
+                f"{emoji} {name} — spend ${float(d.get('spend') or 0):,.2f} · "
+                f"rev ${float(d.get('revenue') or 0):,.2f} · "
+                f"ROAS {float(d.get('roas') or 0):,.2f}x · "
+                f"{int(d.get('orders') or 0)} purch"
+            )
+    out.append("\n".join(plat) if plat else "_No ad-platform data yet._")
+
+    if provisional:
+        out.append(
+            "\n_Note: today's ad attribution is provisional — revenue/ROAS settle later._"
+        )
+    return "\n".join(out) + "\n"
 
 
 def _load_shopify_cvr(shop, day: str) -> Optional[float]:
