@@ -206,24 +206,16 @@ def _compute_monthly() -> dict | None:
     )
     from src.metrics.sales_location import sales_by_country_by_month
 
-    visible = {r["month"] for r in months}
     units_rows = store.get_table_range("product_units_daily", "2000-01-01", today_iso)
     meta_camp_rows = store.get_table_range("meta_campaigns", "2000-01-01", today_iso)
     google_rows = store.get_table_range("google_daily", "2000-01-01", today_iso)
     country_rows = store.get_table_range("sales_by_country_daily", "2000-01-01", today_iso)
-    # righe daily solo dei mesi visibili (per il trend line-chart)
-    trend_rows = sorted((r for r in all_rows if r["day"][:7] in visible),
-                        key=lambda r: r["day"])
     return {
         "months": months,
         "units_by_month": units_by_month(units_rows),
         "meta_campaigns_by_month": meta_campaigns_by_month(meta_camp_rows),
         "google_by_month": google_by_month(google_rows),
         "sales_by_country_by_month": sales_by_country_by_month(country_rows),
-        "trend_rows": [{"day": r["day"],
-                        "revenue": float(r.get("revenue") or 0),
-                        "net_profit_operativo": float(r.get("net_profit_operativo") or 0)}
-                       for r in trend_rows],
     }
 
 
@@ -465,16 +457,18 @@ def _render_monthly(months: list[dict], kla: dict) -> None:
                    "(rate limit / error) — showing nightly DB snapshots for those.")
 
 
-def _render_monthly_trend(trend_rows: list[dict]) -> None:
-    """#1: line chart in stile Shopify — Revenue e Net profit per giorno, stesse assi."""
-    if not trend_rows:
+def _render_monthly_trend(months: list[dict]) -> None:
+    """#1: Revenue e Net profit aggregati PER MESE (un punto per mese, due serie)."""
+    from src.dashboard.monthly import month_label
+
+    if not months:
         return
     st.subheader("Revenue & net profit over time")
     df = pd.DataFrame([{
-        "day": r["day"],
+        "Month": month_label(r["month"]),
         "Revenue": round(float(r.get("revenue") or 0), 2),
         "Net profit": round(float(r.get("net_profit_operativo") or 0), 2),
-    } for r in trend_rows]).set_index("day")
+    } for r in sorted(months, key=lambda x: x["month"])]).set_index("Month")
     st.line_chart(df, color=["#1f7a4d", "#8c9196"], height=300)
 
 
@@ -634,21 +628,26 @@ def _render_google_monthly(google_by_month: dict) -> None:
     st.dataframe(df, hide_index=True, use_container_width=True)
 
 
-def _render_gross_blended(months: list[dict]) -> None:
-    """#8: Gross profit (rev − COGS) e Blended ROAS (rev ÷ ad spend), GRANDI e in evidenza."""
-    from src.dashboard.monthly import gross_and_blended, month_label
+def _render_unit_economics(months: list[dict]) -> None:
+    """#8: quanto posso spendere in ads — GROSS PROFIT/ORDER, BREAK-EVEN ROAS e CPA per mese."""
+    from src.dashboard.monthly import month_label, month_unit_economics
 
     if not months:
         return
-    st.subheader("💚 Gross profit & blended ROAS")
+    st.subheader("💰 How much I can spend on ads")
+    st.caption("Per month, from that month's own totals: gross profit per order, break-even "
+               "ROAS, and break-even CPA (the max you can pay for ads per order).")
     for r in sorted(months, key=lambda x: x["month"], reverse=True):
-        gross, blended = gross_and_blended(r["revenue"], r["cogs_total"], r["total_ad_spend"])
+        u = month_unit_economics(r["revenue"], r["cogs_total"], r["orders"])
         st.markdown(f"**{month_label(r['month'])}**"
                     + (" _(partial)_" if r.get("partial") else ""))
-        c1, c2 = st.columns(2)
-        c1.metric("Gross profit (rev − COGS)", _usd(gross))
-        c2.metric("Blended ROAS (rev ÷ ad spend)",
-                  f"{blended:,.2f}x" if blended is not None else "n/a")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Gross profit / order",
+                  _usd(u["gross_per_order"]) if u["gross_per_order"] is not None else "n/a")
+        c2.metric("Break-even ROAS",
+                  f"{u['be_roas']:,.2f}x" if u["be_roas"] else "n/a")
+        c3.metric("Break-even CPA (max ad $/order)",
+                  _usd(u["be_cpa"]) if u["be_cpa"] is not None else "n/a")
 
 
 def _render_cost_breakdown_monthly(months: list[dict]) -> None:
@@ -798,14 +797,14 @@ def _render_monthly_tab() -> None:
         placeholder.empty()
 
     # Ordine sezioni richiesto:
-    _render_monthly_trend(monthly.get("trend_rows") or [])                 # 1
+    _render_monthly_trend(months)                                        # 1 (per MESE)
     _render_monthly(months, kla)                                          # 2
     _render_product_units_monthly(monthly["units_by_month"])              # 3
     _render_meta_campaigns_monthly(monthly.get("meta_campaigns_by_month") or {})   # 4
     _render_google_monthly(monthly.get("google_by_month") or {})          # 5
     _render_klaviyo_breakdown(months, kla)                                # 6
     _render_klaviyo_flows_monthly(months, kla)                            # 7
-    _render_gross_blended(months)                                        # 8
+    _render_unit_economics(months)                                       # 8
     _render_cost_breakdown_monthly(months)                               # 9
     _render_sales_by_location(monthly.get("sales_by_country_by_month") or {})   # 10
     _render_goals(months)                                                # 11

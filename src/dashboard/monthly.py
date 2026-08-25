@@ -235,6 +235,30 @@ def gross_and_blended(revenue: float, cogs: float,
     return gross, blended
 
 
+def month_unit_economics(revenue: float, cogs: float, orders: int) -> dict:
+    """
+    Economia unitaria del mese dai SUOI totali:
+      - gross_per_order = (revenue − COGS) ÷ ordini
+      - break-even CPA  = AOV − COGS/ordine − 7.5%·AOV − $7  (max spesa ads per ordine)
+      - break-even ROAS = AOV ÷ break-even CPA
+    Riusa compute_breakeven (stessa formula del report). None se 0 ordini / margine ≤ 0.
+    """
+    from src.metrics.profit import compute_breakeven
+
+    orders = int(orders or 0)
+    if orders <= 0:
+        return {"gross_per_order": None, "be_roas": None, "be_cpa": None,
+                "aov": None, "cogs_per_order": None}
+    aov = _f(revenue) / orders
+    cogs_per_order = _f(cogs) / orders
+    gross_per_order = (_f(revenue) - _f(cogs)) / orders
+    be_roas, be_cpa = compute_breakeven(
+        [{"revenue": _f(revenue), "num_orders": orders, "cogs_total": _f(cogs)}]
+    )
+    return {"gross_per_order": gross_per_order, "be_roas": be_roas, "be_cpa": be_cpa,
+            "aov": aov, "cogs_per_order": cogs_per_order}
+
+
 def fixed_alloc_for_month(day_strs: list[str]) -> float:
     """Somma della quota costi fissi DATATA sui giorni con dati del mese (mid-month safe)."""
     from src.metrics.fixed_costs import daily_fixed_allocation

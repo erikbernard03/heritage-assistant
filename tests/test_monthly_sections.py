@@ -8,6 +8,7 @@ from src.dashboard.monthly import (
     goal_progress,
     gross_and_blended,
     meta_campaigns_by_month,
+    month_unit_economics,
 )
 from src.metrics.fixed_costs import daily_fixed_allocation, monthly_fixed_cost_for
 from src.metrics.sales_location import (
@@ -38,6 +39,23 @@ def test_gross_and_blended():
     # ad spend 0 -> blended None
     g2, b2 = gross_and_blended(1000.0, 100.0, 0.0)
     assert g2 == 900.0 and b2 is None
+
+
+def test_month_unit_economics_from_month_totals():
+    # 100 ordini, revenue 10000 (AOV 100), COGS 1000 (COGS/ordine 10)
+    u = month_unit_economics(revenue=10000.0, cogs=1000.0, orders=100)
+    assert round(u["aov"], 2) == 100.0
+    assert round(u["cogs_per_order"], 2) == 10.0
+    # gross/order = (10000-1000)/100 = 90
+    assert round(u["gross_per_order"], 2) == 90.0
+    # be_cpa = 100 - 10 - 0.075*100 - 7 = 75.5 ; be_roas = 100/75.5
+    assert round(u["be_cpa"], 2) == 75.5
+    assert round(u["be_roas"], 4) == round(100 / 75.5, 4)
+
+
+def test_month_unit_economics_zero_orders_is_none():
+    u = month_unit_economics(0.0, 0.0, 0)
+    assert u["gross_per_order"] is None and u["be_roas"] is None and u["be_cpa"] is None
 
 
 # ---- #11 goals ----
