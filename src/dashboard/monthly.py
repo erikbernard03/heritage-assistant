@@ -6,9 +6,15 @@ Regole coerenti con /report7: totali di periodo (mai media dei tassi giornalieri
 """
 from __future__ import annotations
 
+import calendar
+from datetime import date
 from typing import Optional
 
 from src.metrics.profit import compute_breakeven
+
+# Mesi PRIMA di questo: se parziali (copertura incompleta) vengono NASCOSTI del tutto.
+# Dal mese incluso in poi, un mese parziale resta visibile ma marcato "(partial)".
+_HIDE_PARTIAL_BEFORE = "2026-06"
 
 
 def month_of(day_iso: str) -> str:
@@ -74,6 +80,27 @@ def period_store_cvr(month_rows: list[dict]) -> float:
     return (tot_conv / tot_sessions) if tot_sessions > 0 else 0.0
 
 
+def monthly_store_cvr(month_rows: list[dict]) -> Optional[float]:
+    """
+    Store CVR MENSILE = Σ ordini ÷ Σ sessioni del mese (metodo TOTALI, mai media dei tassi).
+
+    Usa le SESSIONI REALI (colonna store_sessions, popolata dal backfill) quando presenti.
+    Se nessun giorno ha sessioni reali, ripiega sulla ricostruzione da store_cvr (giorni
+    cron). Se nessuna delle due è disponibile -> None ("n/a", NON 0.00%).
+
+    Bug precedente: la vista mensile leggeva m.store_cvr (ricostruito dal campo store_cvr,
+    che il backfill non ha impostato) -> 0.00% per ogni mese pur avendo le sessioni reali.
+    """
+    tot_orders = sum(int(r.get("num_orders") or 0) for r in month_rows)
+    tot_sessions = sum(
+        int(r["store_sessions"]) for r in month_rows if r.get("store_sessions") is not None
+    )
+    if tot_sessions > 0:
+        return tot_orders / tot_sessions
+    fallback = period_store_cvr(month_rows)   # giorni con store_cvr ma senza sessions
+    return fallback if fallback > 0 else None
+
+
 def daily_breakeven_series(
     rows_with_lookback: list[dict], period_days: set[str]
 ) -> list[dict]:
@@ -101,6 +128,39 @@ def daily_breakeven_series(
     return out
 
 
+def month_expected_days(month_key: str, today: date) -> int:
+    """Giorni ATTESI con dati per un mese: mese corrente -> fino a oggi; passato -> mese intero."""
+    y, mo = (int(x) for x in month_key.split("-"))
+    if (y, mo) == (today.year, today.month):
+        return today.day
+    return calendar.monthrange(y, mo)[1]
+
+
+def month_is_partial(month_key: str, month_rows: list[dict], today: date) -> bool:
+    """True se il mese ha MENO giorni con dati di quelli attesi (copertura incompleta)."""
+    have = len({r["day"] for r in month_rows})
+    return have < month_expected_days(month_key, today)
+
+
+def filter_visible_months(
+    by_month: dict[str, list[dict]], today: date
+) -> list[tuple[str, list[dict], bool]]:
+    """
+    Applica la regola sui mesi parziali. Ritorna [(month_key, rows, is_partial), ...]:
+    - mese COMPLETO -> incluso (is_partial=False)
+    - mese PARZIALE prima di _HIDE_PARTIAL_BEFORE -> NASCOSTO (escluso)
+    - mese PARZIALE da _HIDE_PARTIAL_BEFORE in poi -> incluso e marcato (is_partial=True)
+    """
+    out: list[tuple[str, list[dict], bool]] = []
+    for month_key in sorted(by_month):
+        rows = by_month[month_key]
+        partial = month_is_partial(month_key, rows, today)
+        if partial and month_key < _HIDE_PARTIAL_BEFORE:
+            continue  # nascondi i mesi parziali storici (dati fuorvianti)
+        out.append((month_key, rows, partial))
+    return out
+
+
 def units_by_month(product_units_rows: list[dict]) -> dict[str, dict[str, int]]:
     """
     Somma le unità per (mese, product_key) da product_units_daily.
@@ -117,6 +177,43 @@ def units_by_month(product_units_rows: list[dict]) -> dict[str, dict[str, int]]:
         by.setdefault(month, {})
         by[month][key] = by[month].get(key, 0) + units
     return {k: by[k] for k in sorted(by)}
+
+
+def klaviyo_campaigns_by_month(campaign_rows: list[dict]) -> dict[str, list[dict]]:
+    """
+    Breakdown per-campagna della revenue Klaviyo per mese (per verifica manuale).
+
+    ATTRIBUZIONE: klaviyo_campaigns ha una riga (day, campaign_id, campaign_name, revenue)
+    per OGNI giorno in cui la campagna compare nella query giornaliera (timeframe = quel
+    giorno). Il totale mensile della dashboard somma queste revenue giornaliere. Qui, per
+    ogni mese, aggreghiamo per campagna: revenue totale (somma dei giorni), numero di
+    GIORNI in cui la campagna appare, e i giorni min/max. Se una campagna appare in molti
+    giorni con revenue ripetuta, è il segnale della finestra di attribuzione Klaviyo che
+    spalma i valori su più giorni (possibile doppio conteggio nel totale mensile).
+
+    Ritorna {mese: [ {campaign_name, campaign_id, revenue, days, first_day, last_day}... ]}
+    ordinato per revenue decrescente.
+    """
+    by: dict[str, dict[str, dict]] = {}
+    for r in campaign_rows:
+        month = month_of(r["day"])
+        cid = str(r.get("campaign_id") or "")
+        acc = by.setdefault(month, {}).setdefault(cid, {
+            "campaign_id": cid,
+            "campaign_name": r.get("campaign_name") or "(no name)",
+            "revenue": 0.0, "days": 0, "first_day": r["day"], "last_day": r["day"],
+        })
+        try:
+            acc["revenue"] += float(r.get("revenue") or 0)
+        except (TypeError, ValueError):
+            pass
+        acc["days"] += 1
+        acc["first_day"] = min(acc["first_day"], r["day"])
+        acc["last_day"] = max(acc["last_day"], r["day"])
+    out: dict[str, list[dict]] = {}
+    for month in sorted(by):
+        out[month] = sorted(by[month].values(), key=lambda c: c["revenue"], reverse=True)
+    return out
 
 
 def _margin_pct(numer: float, denom: float) -> Optional[float]:

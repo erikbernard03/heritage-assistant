@@ -2,15 +2,66 @@
 Test deterministici delle aggregazioni mensili della dashboard (src/dashboard/monthly.py).
 Nessuna rete: funzioni pure con dati iniettati.
 """
+from datetime import date
+
 from src.dashboard.monthly import (
     daily_breakeven_series,
+    filter_visible_months,
     group_by_month,
+    monthly_store_cvr,
     monthly_visitors,
+    month_is_partial,
     month_label,
     month_of,
     period_store_cvr,
     units_by_month,
 )
+
+
+def test_monthly_store_cvr_from_real_sessions_totals():
+    # ordini 10+20=30, sessioni 2000+3000=5000 -> CVR 0.6% (metodo totali)
+    rows = [_drow("2026-08-01", 10, 1000.0, sessions=2000),
+            _drow("2026-08-02", 20, 2000.0, sessions=3000)]
+    cvr = monthly_store_cvr(rows)
+    assert round(cvr * 100, 3) == 0.600
+
+
+def test_monthly_store_cvr_falls_back_to_store_cvr_when_no_sessions():
+    # nessuna sessione reale -> ricostruzione da store_cvr (giorni cron)
+    rows = [_drow("2026-08-01", 10, 1000.0, cvr=0.02, sessions=None),
+            _drow("2026-08-02", 10, 1000.0, cvr=0.04, sessions=None)]
+    assert round(monthly_store_cvr(rows), 6) == round(20 / 750, 6)
+
+
+def test_monthly_store_cvr_none_when_no_sessions_and_no_cvr():
+    # né sessioni né store_cvr -> None ("n/a", NON 0.00%)
+    rows = [_drow("2026-08-01", 10, 1000.0, cvr=0.0, sessions=None)]
+    assert monthly_store_cvr(rows) is None
+
+
+def test_month_is_partial_current_vs_past():
+    today = date(2026, 8, 19)
+    aug_full = [_drow(f"2026-08-{d:02d}", 1, 1.0) for d in range(1, 20)]  # 19 giorni = oggi
+    assert month_is_partial("2026-08", aug_full, today) is False
+    aug_partial = [_drow(f"2026-08-{d:02d}", 1, 1.0) for d in range(1, 11)]  # 10 < 19
+    assert month_is_partial("2026-08", aug_partial, today) is True
+    may_partial = [_drow(f"2026-05-{d:02d}", 1, 1.0) for d in range(27, 32)]  # 5 < 31
+    assert month_is_partial("2026-05", may_partial, today) is True
+
+
+def test_filter_visible_months_hides_old_partials_marks_recent():
+    today = date(2026, 8, 19)
+    by_month = {
+        "2026-05": [_drow(f"2026-05-{d:02d}", 1, 1.0) for d in range(27, 32)],   # parziale, vecchio
+        "2026-06": [_drow(f"2026-06-{d:02d}", 1, 1.0) for d in range(1, 31)],    # completo (30gg)
+        "2026-08": [_drow(f"2026-08-{d:02d}", 1, 1.0) for d in range(1, 11)],    # parziale, recente
+    }
+    visible = filter_visible_months(by_month, today)
+    keys = {k for k, _rows, _p in visible}
+    assert "2026-05" not in keys                     # mese parziale storico NASCOSTO
+    assert ("2026-06", by_month["2026-06"], False) in visible   # completo, non parziale
+    partial_aug = [t for t in visible if t[0] == "2026-08"][0]
+    assert partial_aug[2] is True                    # agosto parziale -> marcato
 
 
 def test_month_label_human_readable():

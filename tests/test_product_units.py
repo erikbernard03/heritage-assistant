@@ -5,8 +5,35 @@ Usa la stessa meccanica keyword di cogs.yaml. Nessuna rete.
 from src.metrics.product_units import (
     PRODUCT_KEY_LABELS,
     classify_product_key,
+    product_bucket,
     units_by_key_from_line_items,
 )
+
+
+def test_product_bucket_families_keep_key_others_use_title():
+    # famiglia nominata -> chiave canonica
+    assert product_bucket("personalized-gold-plated-signet-ring",
+                          "Personalized Gold Plated Signet Ring") == "gold_signet_round"
+    # non-famiglia (bracciale della collection) -> TITOLO reale, non 'other'
+    assert product_bucket("cable-bracelet", "Cable Bracelet") == "Cable Bracelet"
+    assert product_bucket("faith-black-onyx-pearls", "FAITH Black Onyx Pearls") \
+        == "FAITH Black Onyx Pearls"
+    # titolo mancante -> resta 'other'
+    assert product_bucket("weird-handle", None) == "other"
+
+
+def test_units_by_key_breaks_out_bracelets_by_title_no_other_bucket():
+    line_items = [
+        {"handle": "cable-bracelet", "title": "Cable Bracelet", "quantity": 2},
+        {"handle": "black-onyx-bead-bracelet", "title": "Bead Bracelet", "quantity": 1},
+        {"handle": "personalized-gold-plated-signet-ring",
+         "title": "Personalized Gold Plated Signet Ring", "quantity": 3},
+    ]
+    units = units_by_key_from_line_items(line_items)
+    assert units["Cable Bracelet"] == 2
+    assert units["Bead Bracelet"] == 1
+    assert units["gold_signet_round"] == 3
+    assert "other" not in units          # niente secchio generico
 
 
 def test_classify_all_families():

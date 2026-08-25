@@ -143,24 +143,34 @@ def _compute_monthly() -> dict | None:
     (stessi totali di /report7) e le unità prodotto da product_units_daily.
     """
     from src.db.supabase_client import SupabaseStore
-    from src.dashboard.monthly import group_by_month, monthly_visitors, units_by_month
+    from src.dashboard.monthly import (
+        filter_visible_months,
+        group_by_month,
+        klaviyo_campaigns_by_month,
+        monthly_store_cvr,
+        monthly_visitors,
+        units_by_month,
+    )
     from src.report import aggregate_period
 
     store = SupabaseStore()
-    today = periods.rome_today().isoformat()
-    all_rows = store.get_daily_metrics_range("2000-01-01", today)
+    today = periods.rome_today()
+    today_iso = today.isoformat()
+    all_rows = store.get_daily_metrics_range("2000-01-01", today_iso)
     if not all_rows:
         return None
 
     months: list[dict] = []
-    for month, rows in group_by_month(all_rows).items():
+    for month, rows, partial in filter_visible_months(group_by_month(all_rows), today):
         (m, meta_daily, _mc, _tk, google_daily,
          klaviyo_daily, _kc, _be, _h) = aggregate_period(rows, store)
         visitors, est = monthly_visitors(rows)
         months.append({
-            "month": month,
+            "month": month, "partial": partial,
             "revenue": m.revenue, "orders": m.num_orders, "aov": m.aov,
-            "store_cvr": m.store_cvr, "visitors": visitors, "visitors_est": est,
+            # CVR mensile = ordini ÷ sessioni reali (None -> "n/a", non 0.00%)
+            "store_cvr": monthly_store_cvr(rows),
+            "visitors": visitors, "visitors_est": est,
             "meta_roas": float((meta_daily or {}).get("roas") or 0.0),
             "google_roas": float((google_daily or {}).get("roas") or 0.0),
             "klaviyo_revenue": float((klaviyo_daily or {}).get("revenue") or 0.0),
@@ -168,8 +178,13 @@ def _compute_monthly() -> dict | None:
             "net_profit_netto": m.net_profit_netto,
         })
 
-    units_rows = store.get_table_range("product_units_daily", "2000-01-01", today)
-    return {"months": months, "units_by_month": units_by_month(units_rows)}
+    units_rows = store.get_table_range("product_units_daily", "2000-01-01", today_iso)
+    kla_camp_rows = store.get_table_range("klaviyo_campaigns", "2000-01-01", today_iso)
+    return {
+        "months": months,
+        "units_by_month": units_by_month(units_rows),
+        "klaviyo_by_month": klaviyo_campaigns_by_month(kla_camp_rows),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -184,10 +199,14 @@ def _pct(frac) -> str:
 
 
 def _cvr(frac) -> str:
-    """Store CVR con la stessa guardia di sanity dei report (>10% -> 'n/a')."""
+    """Store CVR con guardia di sanity (>10% -> 'n/a'). None/mancante -> 'n/a' (non 0.00%)."""
     from src.report import CVR_SANITY_MAX
 
+    if frac is None:
+        return "n/a"
     v = float(frac or 0)
+    if v <= 0:
+        return "n/a"
     return "n/a" if v > CVR_SANITY_MAX else _pct(v)
 
 
@@ -338,8 +357,12 @@ def _render_monthly(monthly: dict) -> None:
         st.info("No monthly data yet.")
         return
     st.subheader("Monthly overview")
+
+    def _mlabel(r):
+        return month_label(r["month"]) + (" (partial)" if r.get("partial") else "")
+
     df = pd.DataFrame([{
-        "Month": month_label(r["month"]),
+        "Month": _mlabel(r),
         "Revenue": round(r["revenue"], 2),
         "Orders": r["orders"],
         "AOV": round(r["aov"], 2),
@@ -355,7 +378,7 @@ def _render_monthly(monthly: dict) -> None:
     st.dataframe(df, hide_index=True, use_container_width=True)
 
     bars = pd.DataFrame([{
-        "month": month_label(r["month"]),
+        "month": _mlabel(r),
         "Revenue": round(r["revenue"], 2),
         "Net profit (op)": round(r["net_profit_operativo"], 2),
     } for r in months]).set_index("month")
@@ -373,29 +396,67 @@ def _render_product_units_monthly(units_by_month: dict) -> None:
         return
 
     months = list(units_by_month.keys())
-    # Solo le famiglie con almeno 1 unità (righe leggibili su mobile).
-    keys = [k for k, _ in PRODUCT_KEYS
-            if any(units_by_month[mn].get(k, 0) for mn in months)]
+    # Tutti i bucket con vendite: le famiglie nominate (chiavi note) + i TITOLI reali dei
+    # prodotti non-famiglia (nessun secchio 'Other' generico). Ordine: famiglie note prima
+    # (nell'ordine canonico), poi i titoli per volume decrescente.
+    all_buckets = {b for mn in months for b in units_by_month[mn]}
+    family_order = [k for k, _ in PRODUCT_KEYS if k != "other" and k in all_buckets]
+    title_buckets = sorted(
+        (b for b in all_buckets if b not in PRODUCT_KEY_LABELS),
+        key=lambda b: sum(units_by_month[mn].get(b, 0) for mn in months), reverse=True,
+    )
+    # 'other' residuo (titolo mancante) resta in coda se presente.
+    residual = ["other"] if "other" in all_buckets else []
+    buckets = family_order + title_buckets + residual
 
-    # TABELLA: prodotti come RIGHE, un COLONNA per mese + colonna Total.
+    def _label(b):
+        return PRODUCT_KEY_LABELS.get(b, b)   # chiave nota -> etichetta; altrimenti è il titolo
+
+    # TABELLA: prodotti come RIGHE, una COLONNA per mese + colonna Total.
     table_rows = []
-    for k in keys:
-        row = {"Product": PRODUCT_KEY_LABELS[k]}
+    for b in buckets:
+        row = {"Product": _label(b)}
         total = 0
         for mn in months:
-            u = int(units_by_month[mn].get(k, 0))
+            u = int(units_by_month[mn].get(b, 0))
             row[month_label(mn)] = u
             total += u
         row["Total"] = total
         table_rows.append(row)
-    # Riga dei totali per mese in fondo.
     totals = {"Product": "Total"}
     for mn in months:
-        totals[month_label(mn)] = int(sum(units_by_month[mn].get(k, 0) for k in keys))
+        totals[month_label(mn)] = int(sum(units_by_month[mn].get(b, 0) for b in buckets))
     totals["Total"] = int(sum(totals[month_label(mn)] for mn in months))
     table_rows.append(totals)
 
     st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+
+def _render_klaviyo_breakdown(klaviyo_by_month: dict) -> None:
+    """#4: breakdown per-campagna della revenue Klaviyo per mese (verifica manuale)."""
+    from src.dashboard.monthly import month_label
+
+    if not klaviyo_by_month:
+        return
+    st.subheader("Klaviyo campaign revenue — per-campaign breakdown")
+    st.caption(
+        "Monthly Klaviyo revenue = Σ of daily klaviyo_campaigns.revenue (queried per-day, "
+        "stamped by report day). 'days' = how many days each campaign appears — if a "
+        "campaign repeats across many days with the same revenue, Klaviyo's attribution "
+        "window is spreading it (possible double-count)."
+    )
+    for month in sorted(klaviyo_by_month, reverse=True):
+        camps = klaviyo_by_month[month]
+        total = sum(c["revenue"] for c in camps)
+        with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(camps)} campaigns"):
+            df = pd.DataFrame([{
+                "Campaign": c["campaign_name"],
+                "Revenue": round(c["revenue"], 2),
+                "Days": c["days"],
+                "First": c["first_day"],
+                "Last": c["last_day"],
+            } for c in camps])
+            st.dataframe(df, hide_index=True, use_container_width=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -433,6 +494,7 @@ def _render_monthly_tab() -> None:
         return
     _render_monthly(monthly)
     _render_product_units_monthly(monthly["units_by_month"])
+    _render_klaviyo_breakdown(monthly.get("klaviyo_by_month") or {})
 
 
 def main() -> None:

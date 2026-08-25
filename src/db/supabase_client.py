@@ -101,9 +101,12 @@ class SupabaseStore:
     # -------------------------------------------------- product units (Fase 5)
     def upsert_product_units(self, day: str, units_by_key: dict[str, int]) -> int:
         """
-        Upsert delle unità vendute per prodotto del giorno `day` (chiave = day+product_key).
-        Sovrascrive le righe del giorno (idempotente). units_by_key: {product_key: units}.
+        Riscrive le unità vendute per prodotto del giorno `day`. DELETE-then-INSERT perché
+        l'insieme dei bucket (product_key) può CAMBIARE tra run: es. i vecchi record 'other'
+        vengono sostituiti dai titoli reali. Un semplice upsert lascerebbe righe stale.
+        units_by_key: {bucket: units} (bucket = chiave famiglia o titolo prodotto).
         """
+        self.client.table("product_units_daily").delete().eq("day", day).execute()
         rows = [
             {"day": day, "product_key": key, "units": int(units)}
             for key, units in (units_by_key or {}).items()
@@ -111,7 +114,7 @@ class SupabaseStore:
         ]
         if not rows:
             return 0
-        self.client.table("product_units_daily").upsert(rows).execute()
+        self.client.table("product_units_daily").insert(rows).execute()
         return len(rows)
 
     # ----------------------------------------------------- letture (read-only)

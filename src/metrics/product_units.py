@@ -75,10 +75,27 @@ def classify_product_key(
     return "other"
 
 
+def product_bucket(handle: Optional[str], title: Optional[str] = None, resolver=None) -> str:
+    """
+    Bucket di visualizzazione di un line item per la tabella unità/mese.
+
+    - Se combacia una FAMIGLIA nominata -> la sua chiave canonica (es. 'gold_signet_round').
+    - Altrimenti (quello che prima finiva in 'other') -> il TITOLO Shopify reale del prodotto,
+      così OGNI prodotto (es. i bracciali Edge/Bead/Cable/FAITH) appare con il suo nome e
+      non resta nascosto in un secchio generico. Fallback 'other' solo se manca il titolo.
+    """
+    key = classify_product_key(handle, title, resolver=resolver)
+    if key != "other":
+        return key
+    t = (title or "").strip()
+    return t if t else "other"
+
+
 def units_by_key_from_line_items(line_items, resolver=None) -> dict[str, int]:
     """
-    Somma le UNITÀ (quantity) per chiave di prodotto da una lista di LineItemCost
-    (o dict con handle/title/quantity). Ritorna {product_key: units} (solo chiavi >0).
+    Somma le UNITÀ (quantity) per BUCKET di prodotto da una lista di LineItemCost
+    (o dict con handle/title/quantity). Ritorna {bucket: units} (solo bucket >0), dove
+    `bucket` è una chiave famiglia oppure il titolo reale (vedi product_bucket).
     """
     resolver = resolver or get_resolver()
     out: dict[str, int] = {}
@@ -92,6 +109,6 @@ def units_by_key_from_line_items(line_items, resolver=None) -> dict[str, int]:
             qty = 0
         if qty <= 0:
             continue
-        key = classify_product_key(handle, title, resolver=resolver)
+        key = product_bucket(handle, title, resolver=resolver)
         out[key] = out.get(key, 0) + qty
     return out
