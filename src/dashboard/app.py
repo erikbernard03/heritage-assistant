@@ -328,25 +328,34 @@ def _select_period() -> tuple[str, str, str]:
 # --------------------------------------------------------------------------- #
 # Sezioni di rendering
 # --------------------------------------------------------------------------- #
-def _render_kpis(m: dict, be: dict) -> None:
-    st.subheader("Key metrics")
-    r1 = st.columns(2)
-    r1[0].metric("Revenue", _usd(m["revenue"]))
-    r1[1].metric("Orders", f"{m['num_orders']:,}")
-    r2 = st.columns(2)
-    r2[0].metric("AOV", _usd(m["aov"]))
-    r2[1].metric("Store CVR", _cvr(m["store_cvr"]))
-    r3 = st.columns(2)
-    r3[0].metric("Net profit (operating)", _usd(m["net_profit_operativo"]))
-    r3[1].metric("Net profit (net)", _usd(m["net_profit_netto"]))
-    r4 = st.columns(2)
-    r4[0].metric("Operating margin", _margin(m["net_profit_operativo"], m["revenue"]))
-    r4[1].metric("Net margin", _margin(m["net_profit_netto"], m["revenue"]))
-    r5 = st.columns(2)
+def _render_period_highlights(m: dict, be: dict, meta_roas: float, be_note: str) -> None:
+    """Le 5 metriche principali del periodo, EVIDENZIATE in cima."""
+    st.subheader("⭐ Key figures")
     be_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
     be_cpa = _usd(be["cpa"]) if be.get("cpa") is not None else "n/a"
-    r5[0].metric("Break-even ROAS", be_roas)
-    r5[1].metric("Break-even CPA", be_cpa)
+    r1 = st.columns(2)
+    r1[0].metric("Revenue", _usd(m["revenue"]))
+    r1[1].metric("Net profit (operating)", _usd(m["net_profit_operativo"]))
+    r2 = st.columns(2)
+    r2[0].metric("Break-even ROAS", be_roas)
+    r2[1].metric("Break-even CPA", be_cpa)
+    r3 = st.columns(2)
+    r3[0].metric("Meta ROAS", f"{float(meta_roas or 0):,.2f}x" if meta_roas else "n/a")
+    st.caption(f"Break-even is computed from the **{be_note}**.")
+
+
+def _render_kpis(m: dict) -> None:
+    """Metriche secondarie del periodo (le 5 principali sono già in evidenza sopra)."""
+    st.subheader("Other metrics")
+    r1 = st.columns(2)
+    r1[0].metric("Orders", f"{m['num_orders']:,}")
+    r1[1].metric("AOV", _usd(m["aov"]))
+    r2 = st.columns(2)
+    r2[0].metric("Store CVR", _cvr(m["store_cvr"]))
+    r2[1].metric("Net profit (net)", _usd(m["net_profit_netto"]))
+    r3 = st.columns(2)
+    r3[0].metric("Operating margin", _margin(m["net_profit_operativo"], m["revenue"]))
+    r3[1].metric("Net margin", _margin(m["net_profit_netto"], m["revenue"]))
 
 
 def _render_platform(name: str, icon: str, d: dict | None) -> None:
@@ -411,34 +420,6 @@ def _render_cost_breakdown(m: dict, num_days: int) -> None:
         [{"Item": label, "Cost": f"−{_usd(val)}"} for label, val in rows]
     )
     st.dataframe(df, hide_index=True, use_container_width=True)
-
-
-def _render_trend(daily_rows: list[dict]) -> None:
-    st.subheader("Revenue & net profit trend")
-    df = pd.DataFrame([
-        {
-            "day": r["day"],
-            "Revenue": round(float(r.get("revenue") or 0), 2),
-            "Net profit (operating)": round(float(r.get("net_profit_operativo") or 0), 2),
-        }
-        for r in daily_rows
-    ]).set_index("day")
-    st.bar_chart(df["Revenue"], color="#2563eb", height=220)
-    st.line_chart(df["Net profit (operating)"], color="#16a34a", height=220)
-
-
-def _render_breakeven_trends(be_series: list[dict]) -> None:
-    """Grafici giornalieri: AOV, break-even ROAS, break-even CPA (4-day rolling, come report)."""
-    if not be_series:
-        return
-    st.subheader("Daily trends — AOV & break-even")
-    df = pd.DataFrame(be_series).set_index("day")
-    st.caption("AOV ($/order)")
-    st.line_chart(df["aov"], color="#7c3aed", height=200)
-    st.caption("Break-even ROAS (×) — from each day's prior 4-day window")
-    st.line_chart(df["be_roas"], color="#ea580c", height=200)
-    st.caption("Break-even CPA ($)")
-    st.line_chart(df["be_cpa"], color="#0891b2", height=200)
 
 
 def _render_monthly(months: list[dict], kla: dict) -> None:
@@ -816,9 +797,15 @@ def _render_period_tab() -> None:
         return
 
     m = data["metrics"]
-    _render_kpis(m, data["breakeven"])
-    _render_trend(data["daily_rows"])
-    _render_breakeven_trends(data["be_series"])
+    be = data["breakeven"]
+    meta_roas = float((data.get("meta_daily") or {}).get("roas") or 0.0)
+    num_days = data["num_days"]
+    # Il break-even usa gli ultimi 4 giorni del periodo (per un solo giorno = quel giorno).
+    be_note = "selected day (own day)" if num_days == 1 else "last 4 days of the period"
+
+    _render_period_highlights(m, be, meta_roas, be_note)     # le 5 metriche in evidenza
+    _render_kpis(m)                                          # metriche secondarie
+    # (rimossi i grafici "Revenue & net profit trend" e "Daily trends — AOV & break-even")
     _render_platforms(data)
     _render_meta_campaigns(data["meta_campaigns"])
     _render_cost_breakdown(m, data["num_days"])
