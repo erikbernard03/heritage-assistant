@@ -168,7 +168,7 @@ def _compute_monthly() -> dict | None:
     # _klaviyo_period_cached e _render_monthly_tab).
     months: list[dict] = []
     for month, rows, partial in filter_visible_months(group_by_month(all_rows), today):
-        (m, meta_daily, _mc, _tk, google_daily,
+        (m, meta_daily, _mc, tiktok_daily, google_daily,
          db_klaviyo, _kc, _be, _h) = aggregate_period(rows, store)
         visitors, est = monthly_visitors(rows)
 
@@ -187,7 +187,9 @@ def _compute_monthly() -> dict | None:
             "visitors": visitors, "visitors_est": est,
             "meta_roas": float((meta_daily or {}).get("roas") or 0.0),
             "google_roas": float((google_daily or {}).get("roas") or 0.0),
-            # BASELINE dal DB (snapshot notturni); i valori a finestra piena arrivano lazy.
+            "tiktok_roas": float((tiktok_daily or {}).get("roas") or 0.0),
+            "total_ad_spend": float(m.ads_spend or 0.0),   # Meta + TikTok + Google
+            # BASELINE dal DB (snapshot notturni); il TABLE usa i valori live (vedi tab).
             "klaviyo_campaigns_revenue": float((db_klaviyo or {}).get("revenue") or 0.0),
             "klaviyo_flows_revenue": (db_klaviyo or {}).get("flow_revenue"),
             "net_profit_operativo": m.net_profit_operativo,
@@ -412,30 +414,28 @@ def _render_monthly(months: list[dict], kla: dict) -> None:
         v = k.get("flows_revenue") if k.get("loaded") else r.get("klaviyo_flows_revenue")
         return (float(v) if v is not None else None)
 
-    def _email(r):
-        f = _flow(r)
-        return (round(_camp(r) + f, 2) if f is not None else None)
-
+    # Ordine colonne ESATTO richiesto.
     df = pd.DataFrame([{
         "Month": _mlabel(r),
         "Revenue": round(r["revenue"], 2),
-        "Orders": r["orders"],
-        "AOV": round(r["aov"], 2),
-        "Store CVR": _cvr(r["store_cvr"]),
-        "Visitors": f"{r['visitors']:,.0f}" + (" est." if r["visitors_est"] else ""),
-        "Meta ROAS": round(r["meta_roas"], 2),
-        "Google ROAS": round(r["google_roas"], 2),
-        "Klaviyo campaigns rev": round(_camp(r), 2),
-        "Klaviyo flows rev": (round(_flow(r), 2) if _flow(r) is not None else None),
-        "Klaviyo email rev": _email(r),
-        "Net profit (op)": round(r["net_profit_operativo"], 2),
+        "Net profit": round(r["net_profit_operativo"], 2),
         "Net margin %": (round(r["net_profit_netto"] / r["revenue"] * 100, 1)
                          if r["revenue"] else None),
+        "Orders": r["orders"],
+        "Store CVR": _cvr(r["store_cvr"]),
+        "Visitors": f"{r['visitors']:,.0f}" + (" est." if r["visitors_est"] else ""),
+        "AOV": round(r["aov"], 2),
+        "Meta ROAS": round(r["meta_roas"], 2),
+        "Google ROAS": round(r["google_roas"], 2),
+        "TikTok ROAS": round(r.get("tiktok_roas", 0.0), 2),
+        "Total ad spend": round(r.get("total_ad_spend", 0.0), 2),
+        "Klaviyo campaigns revenue": round(_camp(r), 2),
+        "Klaviyo flows revenue": (round(_flow(r), 2) if _flow(r) is not None else None),
     } for r in months])
     st.dataframe(df, hide_index=True, use_container_width=True)
     if any(not kla.get(r["month"], {}).get("loaded") for r in months):
-        st.caption("ℹ️ Klaviyo values for older months show nightly DB snapshots until you "
-                   "open the month below and click **Load email details** (avoids Klaviyo's rate limit).")
+        st.caption("ℹ️ Klaviyo values for some months couldn't be fetched live "
+                   "(rate limit / error) — showing nightly DB snapshots for those.")
 
     bars = pd.DataFrame([{
         "month": _mlabel(r),
@@ -502,7 +502,7 @@ def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
     st.subheader("Klaviyo campaign revenue — per-campaign breakdown")
     st.caption(
         "Full-window query per month (each campaign counted once — matches the Klaviyo "
-        "dashboard). Current month loads automatically; older months load on demand to "
+        "dashboard). Fetched once per month and cached (past months indefinitely) to "
         "respect Klaviyo's low reporting rate limit."
     )
     for r in sorted(months, key=lambda x: x["month"], reverse=True):
@@ -527,13 +527,12 @@ def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
                 else:
                     st.caption("No campaigns in this window.")
         else:
-            with st.expander(f"{label} — email details not loaded"):
+            with st.expander(f"{label} — live fetch failed (showing DB snapshot in table)"):
                 if k.get("error"):
                     # #4: warning SOLO su fallimento reale (non su cache hit).
                     st.warning(f"Klaviyo live fetch failed: {k['error']}")
-                if st.button("📥 Load email details", key=f"btn_kla_{month}"):
-                    st.session_state[f"kla_loaded_{month}"] = True
-                    st.rerun()
+                if st.button("🔄 Retry", key=f"btn_kla_{month}"):
+                    st.rerun()   # i fallimenti non sono in cache -> ritenta al rerun
 
 
 # --------------------------------------------------------------------------- #
@@ -571,16 +570,13 @@ def _render_monthly_tab() -> None:
         return
     months = monthly["months"]
 
-    # Klaviyo (finestra piena) CACHED + LAZY: mese corrente eager; mesi passati solo se
-    # l'utente li ha caricati (bottone). Un cache-hit non ri-chiama l'API né mostra warning;
-    # solo un fallimento REALE (dopo backoff) imposta 'error'.
+    # Klaviyo (finestra piena) per OGNI mese visibile, CACHED. I mesi passati sono in cache
+    # indefinita (non cambiano): al primo load ognuno viene tirato UNA volta (in sequenza,
+    # rispettando il Retry-After), poi è tutto cache -> rate limit rispettato. Il TABLE usa
+    # questi valori live; l'espansore mostra solo il dettaglio per-campagna (già in cache).
     kla: dict[str, dict] = {}
     for r in months:
         month = r["month"]
-        want = r["is_current"] or st.session_state.get(f"kla_loaded_{month}", False)
-        if not want:
-            kla[month] = {"loaded": False, "error": None}
-            continue
         try:
             kp = _klaviyo_period_cached(r["klaviyo_start"], r["klaviyo_end"], r["is_current"])
             kla[month] = {
