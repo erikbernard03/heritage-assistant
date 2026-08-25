@@ -68,7 +68,7 @@ class KlaviyoConnector:
     def _request(self, method: str, path: str, json_body: Optional[dict] = None) -> dict:
         """Richiesta con gestione rate-limit (429 + Retry-After) e backoff su 5xx."""
         url = path if path.startswith("http") else f"{self.BASE}{path}"
-        max_retries = 3
+        max_retries = 4
         for attempt in range(max_retries):
             resp = self._session.request(
                 method, url, headers=self._headers(), json=json_body, timeout=self.timeout
@@ -76,8 +76,10 @@ class KlaviyoConnector:
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", 2 ** attempt * 3))
-                time.sleep(min(retry_after, 15))
+                # Rispetta il Retry-After di Klaviyo con backoff PIÙ LUNGO (l'endpoint
+                # reporting ha un rate limit bassissimo). Cap a 60s per tentativo.
+                retry_after = float(resp.headers.get("Retry-After", 2 ** attempt * 5))
+                time.sleep(min(retry_after, 60))
                 continue
             if resp.status_code in (500, 502, 503, 504):
                 time.sleep(min(2 ** attempt * 3, 15))
