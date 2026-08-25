@@ -163,19 +163,32 @@ def _compute_monthly() -> dict | None:
 
     months: list[dict] = []
     klaviyo_by_month: dict[str, list[dict]] = {}
+    klaviyo_error = None
     for month, rows, partial in filter_visible_months(group_by_month(all_rows), today):
         (m, meta_daily, _mc, _tk, google_daily,
-         _kd, _kc, _be, _h) = aggregate_period(rows, store)
+         db_klaviyo, _kc, _be, _h) = aggregate_period(rows, store)
         visitors, est = monthly_visitors(rows)
 
-        # Klaviyo di PERIODO: UNA query a finestra piena sul mese (non somma di snapshot
-        # giornalieri, che sottostima). Combacia con la dashboard Klaviyo per quel range.
+        # Klaviyo di PERIODO: UNA query a finestra piena sul mese (campagne + flows). Se la
+        # query fallisce, FALLBACK ai valori aggregati dal DB (db_klaviyo) — così il mese
+        # non sparisce. L'errore reale viene mostrato in fondo alla sezione.
         y, mo = (int(x) for x in month.split("-"))
         m_start = f"{month}-01"
         last_dom = calendar.monthrange(y, mo)[1]
         m_end = min(f"{month}-{last_dom:02d}", today_iso)   # mese corrente -> fino a oggi
-        kla_daily, kla_camps = load_klaviyo_period(m_start, m_end)
-        klaviyo_by_month[month] = kla_camps or []
+        kp = load_klaviyo_period(m_start, m_end)
+
+        if kp.get("ok") and kp.get("campaigns_revenue") is not None:
+            camp_rev = float(kp["campaigns_revenue"] or 0.0)
+            flow_rev = kp.get("flows_revenue")
+            klaviyo_by_month[month] = kp.get("campaigns") or []
+        else:
+            # fallback DB (snapshot notturni) — sottostima ma meglio di niente
+            camp_rev = float((db_klaviyo or {}).get("revenue") or 0.0)
+            flow_rev = (db_klaviyo or {}).get("flow_revenue")
+            klaviyo_by_month[month] = []
+        if kp.get("error") and klaviyo_error is None:
+            klaviyo_error = kp["error"]
 
         months.append({
             "month": month, "partial": partial,
@@ -185,7 +198,8 @@ def _compute_monthly() -> dict | None:
             "visitors": visitors, "visitors_est": est,
             "meta_roas": float((meta_daily or {}).get("roas") or 0.0),
             "google_roas": float((google_daily or {}).get("roas") or 0.0),
-            "klaviyo_revenue": float((kla_daily or {}).get("revenue") or 0.0),
+            "klaviyo_campaigns_revenue": camp_rev,
+            "klaviyo_flows_revenue": (float(flow_rev) if flow_rev is not None else None),
             "net_profit_operativo": m.net_profit_operativo,
             "net_profit_netto": m.net_profit_netto,
         })
@@ -195,6 +209,7 @@ def _compute_monthly() -> dict | None:
         "months": months,
         "units_by_month": units_by_month(units_rows),
         "klaviyo_by_month": klaviyo_by_month,   # da query a finestra piena (per campagna)
+        "klaviyo_error": klaviyo_error,
     }
 
 
@@ -381,7 +396,12 @@ def _render_monthly(monthly: dict) -> None:
         "Visitors": f"{r['visitors']:,.0f}" + (" est." if r["visitors_est"] else ""),
         "Meta ROAS": round(r["meta_roas"], 2),
         "Google ROAS": round(r["google_roas"], 2),
-        "Klaviyo rev": round(r["klaviyo_revenue"], 2),
+        "Klaviyo campaigns rev": round(r["klaviyo_campaigns_revenue"], 2),
+        "Klaviyo flows rev": (round(r["klaviyo_flows_revenue"], 2)
+                              if r.get("klaviyo_flows_revenue") is not None else None),
+        "Klaviyo email rev": (round(r["klaviyo_campaigns_revenue"]
+                                    + r["klaviyo_flows_revenue"], 2)
+                              if r.get("klaviyo_flows_revenue") is not None else None),
         "Net profit (op)": round(r["net_profit_operativo"], 2),
         "Net margin %": (round(r["net_profit_netto"] / r["revenue"] * 100, 1)
                          if r["revenue"] else None),
@@ -443,13 +463,22 @@ def _render_product_units_monthly(units_by_month: dict) -> None:
     st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
 
 
-def _render_klaviyo_breakdown(klaviyo_by_month: dict) -> None:
+def _render_klaviyo_breakdown(klaviyo_by_month: dict, error: str | None = None) -> None:
     """Breakdown per-campagna della revenue Klaviyo per mese (query a finestra piena)."""
     from src.dashboard.monthly import month_label
 
-    if not klaviyo_by_month or not any(klaviyo_by_month.values()):
-        return
     st.subheader("Klaviyo campaign revenue — per-campaign breakdown")
+    if error:
+        # #1: NON nascondere silenziosamente — mostra l'errore reale della query live.
+        st.warning(
+            f"⚠️ Klaviyo live query issue: {error}\n\n"
+            "Falling back to DB-aggregated values where possible. Check the dashboard "
+            "service has KLAVIYO_API_KEY, KLAVIYO_API_REVISION and KLAVIYO_CONVERSION_METRIC_ID, "
+            "and that the key has Campaigns/Flows/Metrics Read scopes."
+        )
+    if not klaviyo_by_month or not any(klaviyo_by_month.values()):
+        st.caption("No per-campaign breakdown available for the live query.")
+        return
     st.caption(
         "Monthly Klaviyo revenue = ONE campaign-values-report query over the full month "
         "(full attribution window), each campaign counted once — matches the Klaviyo "
@@ -505,7 +534,8 @@ def _render_monthly_tab() -> None:
         return
     _render_monthly(monthly)
     _render_product_units_monthly(monthly["units_by_month"])
-    _render_klaviyo_breakdown(monthly.get("klaviyo_by_month") or {})
+    _render_klaviyo_breakdown(monthly.get("klaviyo_by_month") or {},
+                              error=monthly.get("klaviyo_error"))
 
 
 def main() -> None:

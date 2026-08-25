@@ -632,7 +632,7 @@ def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool):
 
     try:
         from src.connectors.klaviyo import KlaviyoConnector
-        from src.metrics.klaviyo import compute_klaviyo_metrics
+        from src.metrics.klaviyo import compute_flow_revenue, compute_klaviyo_metrics
 
         kc = KlaviyoConnector()
         metric_id = kc.resolve_conversion_metric_id()
@@ -645,6 +645,14 @@ def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool):
         names = kc.get_campaign_names(ids)
         computed = compute_klaviyo_metrics(day, raw, names=names)
 
+        # FLOWS: snapshot notturno della revenue flows del giorno (best-effort: se lo scope
+        # Flows:Read manca o l'endpoint fallisce, flow_revenue resta None e il report va lo stesso).
+        try:
+            flow_raw = kc.get_flow_report(start_iso, end_iso, metric_id)
+            computed.flow_revenue, _flows = compute_flow_revenue(flow_raw)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[report] pull Klaviyo FLOWS saltata: {exc}")
+
         if persist and store is not None:
             store.upsert_klaviyo_daily(computed)
             store.upsert_klaviyo_campaigns(computed)
@@ -655,24 +663,30 @@ def _load_klaviyo(day: str, start_iso: str, end_iso: str, persist: bool):
         return None, []
 
 
-def load_klaviyo_period(start_day: str, end_day: str):
+def load_klaviyo_period(start_day: str, end_day: str) -> dict:
     """
-    Revenue Klaviyo di PERIODO via UNA query campaign-values-report sull'intera finestra
-    [start_day, end_day] (giorni Europe/Rome inclusi). Ritorna (klaviyo_daily_dict | None,
-    campaigns: list[dict]) — la stessa forma di _load_klaviyo, ma con la revenue attribuita
-    da Klaviyo sull'INTERO periodo (finestra di attribuzione completa), quindi combacia con
-    la dashboard Klaviyo.
+    Revenue Klaviyo di PERIODO (CAMPAGNE + FLOWS) via query a finestra piena sull'intervallo
+    [start_day, end_day] (giorni Europe/Rome inclusi). UNA query per report-type: ogni
+    campagna/flow è attribuito UNA volta sull'intera finestra di attribuzione.
 
-    Perché serve: sommare gli snapshot GIORNALIERI klaviyo_daily SOTTOSTIMA la revenue —
-    i giorni-buco e l'attribuzione tardiva (conversioni attribuite dopo lo snapshot) vanno
-    persi. La query a finestra piena cattura tutta la revenue attribuita, una volta sola.
-    NON persiste: è una lettura on-demand per le viste di periodo.
+    Perché serve: sommare gli snapshot GIORNALIERI SOTTOSTIMA (giorni-buco + attribuzione
+    tardiva). La finestra piena combacia con la dashboard Klaviyo.
+
+    Ritorna SEMPRE un dict (mai eccezione), così l'errore è VISIBILE e il chiamante può
+    ripiegare sui valori aggregati dal DB:
+      {ok, error, campaigns_revenue, flows_revenue, campaigns:[...], flows:[...],
+       daily: klaviyo_daily_dict|None}
+    - ok=False + error valorizzato se la query fallisce o Klaviyo non è configurato.
+    - flows_revenue=None se lo scope Flows:Read manca / l'endpoint flow fallisce.
     """
+    out = {"ok": False, "error": None, "campaigns_revenue": None, "flows_revenue": None,
+           "campaigns": [], "flows": [], "daily": None}
     if not settings.KLAVIYO_API_KEY:
-        return None, []
+        out["error"] = "KLAVIYO_API_KEY non impostata su questo servizio."
+        return out
     try:
         from src.connectors.klaviyo import KlaviyoConnector
-        from src.metrics.klaviyo import compute_klaviyo_metrics
+        from src.metrics.klaviyo import compute_flow_revenue, compute_klaviyo_metrics
 
         tz = pytz.timezone(settings.TIMEZONE)
         s = tz.localize(datetime.combine(date.fromisoformat(start_day), time.min))
@@ -681,18 +695,37 @@ def load_klaviyo_period(start_day: str, end_day: str):
 
         kc = KlaviyoConnector()
         metric_id = kc.resolve_conversion_metric_id()
+
+        # CAMPAGNE (finestra piena)
         raw = kc.get_daily_campaign_report(s.isoformat(), e.isoformat(), metric_id)
-        ids = [
-            str((r.get("groupings") or {}).get("campaign_id") or "")
-            for r in raw
-            if (r.get("groupings") or {}).get("campaign_id")
-        ]
+        ids = [str((r.get("groupings") or {}).get("campaign_id") or "")
+               for r in raw if (r.get("groupings") or {}).get("campaign_id")]
         names = kc.get_campaign_names(ids)
         computed = compute_klaviyo_metrics(f"{start_day} → {end_day}", raw, names=names)
-        return computed.as_db_row(), [c.as_db_row() for c in computed.campaigns]
-    except Exception as exc:  # noqa: BLE001 — la vista deve arrivare comunque
-        print(f"[report] pull Klaviyo di periodo saltata: {exc}")
-        return None, []
+        out["campaigns"] = [c.as_db_row() for c in computed.campaigns]
+        out["campaigns_revenue"] = round(computed.revenue, 2)
+
+        # FLOWS (finestra piena) — best-effort: scope Flows:Read separato
+        try:
+            flow_raw = kc.get_flow_report(s.isoformat(), e.isoformat(), metric_id)
+            fids = [str((r.get("groupings") or {}).get("flow_id") or "")
+                    for r in flow_raw if (r.get("groupings") or {}).get("flow_id")]
+            fnames = kc.get_flow_names(fids)
+            flows_total, flows = compute_flow_revenue(flow_raw, names=fnames)
+            computed.flow_revenue = flows_total
+            out["flows"] = flows
+            out["flows_revenue"] = round(flows_total, 2)
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = f"flows: {exc}"   # campagne ok, flows no (scope?)
+            print(f"[report] Klaviyo FLOWS di periodo saltati: {exc}")
+
+        out["daily"] = computed.as_db_row()
+        out["ok"] = True
+        return out
+    except Exception as exc:  # noqa: BLE001 — NON inghiottire: l'errore torna al chiamante
+        out["error"] = str(exc)[:300]
+        print(f"[report] pull Klaviyo di periodo FALLITA: {exc}")
+        return out
 
 
 def _persist_product_units(store, metrics: DailyMetrics) -> None:
@@ -897,6 +930,9 @@ def format_report(
     if klaviyo_daily:
         kla_rev = float(klaviyo_daily.get("revenue") or 0)
         out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
+        flow_rev = klaviyo_daily.get("flow_revenue")
+        if flow_rev is not None:
+            out.append(f"🔁 Klaviyo flow revenue: ${float(flow_rev):,.2f}")
     out.append(_margin_line(m))
 
     # ---- SEZIONE 2 — COST BREAKDOWN -----------------------------------------
@@ -1149,9 +1185,11 @@ def _agg_klaviyo(rows: list[dict], day_set: set, label: str) -> Optional[dict]:
     recipients = sum(int(r.get("recipients") or 0) for r in rows)
     opens = sum(int(r.get("opens") or 0) for r in rows)
     clicks = sum(int(r.get("clicks") or 0) for r in rows)
+    flow_vals = [r.get("flow_revenue") for r in rows if r.get("flow_revenue") is not None]
     return {
         "day": label,
         "revenue": sum(_f(r.get("revenue")) for r in rows),
+        "flow_revenue": (sum(_f(v) for v in flow_vals) if flow_vals else None),
         "opens": opens,
         "clicks": clicks,
         "conversions": sum(int(r.get("conversions") or 0) for r in rows),
@@ -1290,12 +1328,12 @@ def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
      klaviyo_daily, klaviyo_campaigns, breakeven, header) = aggregate_period(
         daily_rows, store, header=header,
     )
-    # Klaviyo di PERIODO via query a finestra piena (non somma degli snapshot giornalieri,
-    # che sottostima). Se disponibile, sostituisce i valori aggregati dal DB.
+    # Klaviyo di PERIODO via query a finestra piena (campagne + flows). Se la query va a
+    # buon fine, sostituisce i valori aggregati dal DB; altrimenti resta il fallback DB.
     day_strs = sorted(r["day"] for r in daily_rows)
-    kd, kc = load_klaviyo_period(day_strs[0], day_strs[-1])
-    if kd is not None:
-        klaviyo_daily, klaviyo_campaigns = kd, kc
+    kp = load_klaviyo_period(day_strs[0], day_strs[-1])
+    if kp.get("ok") and kp.get("daily"):
+        klaviyo_daily, klaviyo_campaigns = kp["daily"], kp["campaigns"]
     return format_report(
         m, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
         tiktok_daily, [], google_daily, breakeven=breakeven, header=header,

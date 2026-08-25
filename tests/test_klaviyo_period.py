@@ -3,7 +3,30 @@ Test della revenue Klaviyo di PERIODO (query a finestra piena, non somma di snap
 Nessuna rete: si monkeypatcha load_klaviyo_period per verificare che le viste di periodo
 usino il valore a finestra piena invece della somma giornaliera (che sottostima).
 """
-from src.metrics.klaviyo import compute_klaviyo_metrics
+from src.metrics.klaviyo import compute_flow_revenue, compute_klaviyo_metrics
+
+
+def test_compute_flow_revenue_groups_by_flow_and_sums():
+    # result per flow_message -> raggruppati per flow_id, conversion_value sommato
+    raw = [
+        {"groupings": {"flow_id": "f1", "flow_message_id": "m1"},
+         "statistics": {"conversion_value": 300.0, "conversions": 4}},
+        {"groupings": {"flow_id": "f1", "flow_message_id": "m2"},
+         "statistics": {"conversion_value": 120.0, "conversions": 2}},
+        {"groupings": {"flow_id": "f2", "flow_message_id": "m3"},
+         "statistics": {"conversion_value": 80.0, "conversions": 1}},
+    ]
+    total, flows = compute_flow_revenue(raw, names={"f1": "Welcome", "f2": "Abandoned Cart"})
+    assert round(total, 2) == 500.0
+    by_name = {f["flow_name"]: f["revenue"] for f in flows}
+    assert by_name["Welcome"] == 420.0          # 300 + 120 (due messaggi, stesso flow)
+    assert by_name["Abandoned Cart"] == 80.0
+    assert flows[0]["flow_name"] == "Welcome"   # ordinato per revenue desc
+
+
+def test_compute_flow_revenue_empty():
+    total, flows = compute_flow_revenue([])
+    assert total == 0.0 and flows == []
 
 
 def test_full_period_query_gives_correct_per_campaign_totals():
@@ -50,21 +73,23 @@ def test_render_multiday_uses_full_period_klaviyo_not_summed_daily(monkeypatch):
                         {"day": "2026-08-02", "revenue": 35.0, "recipients": 0}]
             return []
 
-    # la query a finestra piena restituisce il valore corretto (997), da usare nel report
+    # la query a finestra piena restituisce il valore corretto (997) + flows (250)
     monkeypatch.setattr(
         report, "load_klaviyo_period",
-        lambda start_day, end_day: (
-            {"day": f"{start_day} → {end_day}", "revenue": 997.0, "opens": 0, "clicks": 0,
-             "conversions": 8, "recipients": 0, "open_rate": 0.0, "click_rate": 0.0},
-            [{"day": f"{start_day} → {end_day}", "campaign_id": "c2",
-              "campaign_name": "Flash Sale Closer", "revenue": 997.0, "opens": 0,
-              "clicks": 0, "conversions": 8, "recipients": 0,
-              "open_rate": 0.0, "click_rate": 0.0}],
-        ),
+        lambda start_day, end_day: {
+            "ok": True, "error": None,
+            "campaigns_revenue": 997.0, "flows_revenue": 250.0,
+            "campaigns": [{"campaign_name": "Flash Sale Closer", "revenue": 997.0}],
+            "flows": [{"flow_name": "Welcome", "revenue": 250.0}],
+            "daily": {"day": f"{start_day} → {end_day}", "revenue": 997.0,
+                      "flow_revenue": 250.0, "opens": 0, "clicks": 0, "conversions": 8,
+                      "recipients": 0, "open_rate": 0.0, "click_rate": 0.0},
+        },
     )
 
     text = report._render_multiday(daily, _FakeStore(), header="📊 *Test period* _(USD)_")
     assert "Klaviyo campaign revenue: $997.00" in text
+    assert "Klaviyo flow revenue: $250.00" in text
     # NON la somma giornaliera sottostimata (40+35=75)
     assert "Klaviyo campaign revenue: $75.00" not in text
 
@@ -86,6 +111,11 @@ def test_render_multiday_keeps_aggregated_klaviyo_when_period_query_unavailable(
                 return [{"day": "2026-08-01", "revenue": 120.0, "recipients": 0}]
             return []
 
-    monkeypatch.setattr(report, "load_klaviyo_period", lambda s, e: (None, []))
+    # query live fallita (ok=False) -> resta il valore aggregato dal DB (120)
+    monkeypatch.setattr(
+        report, "load_klaviyo_period",
+        lambda s, e: {"ok": False, "error": "boom", "campaigns_revenue": None,
+                      "flows_revenue": None, "campaigns": [], "flows": [], "daily": None},
+    )
     text = report._render_multiday(daily, _FakeStore(), header="H")
     assert "Klaviyo campaign revenue: $120.00" in text

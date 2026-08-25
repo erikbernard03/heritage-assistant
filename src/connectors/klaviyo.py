@@ -105,20 +105,14 @@ class KlaviyoConnector:
             return metrics[0]["id"]
         raise KlaviyoError("Nessuna metrica di conversione trovata su Klaviyo.")
 
-    def get_daily_campaign_report(
-        self, start_iso: str, end_iso: str, conversion_metric_id: str
+    def _values_report(
+        self, report_type: str, path: str, start_iso: str, end_iso: str,
+        conversion_metric_id: str,
     ) -> list[dict]:
-        """
-        UNICA query di reporting del giorno: valori per CAMPAGNA nell'intervallo
-        [start_iso, end_iso). Endpoint campaign-values-report (NO flows).
-
-        Ritorna la lista grezza dei risultati: ogni elemento ha groupings (campaign_id)
-        e statistics (conversion_value, opens, clicks, ...). I calcoli/aggregazioni
-        avvengono in src/metrics/klaviyo.py, deterministicamente.
-        """
+        """Esegue un values-report (campaign o flow) e ritorna la lista grezza dei results."""
         body = {
             "data": {
-                "type": "campaign-values-report",
+                "type": report_type,
                 "attributes": {
                     "statistics": CAMPAIGN_STATISTICS,
                     "timeframe": {"start": start_iso, "end": end_iso},
@@ -126,8 +120,52 @@ class KlaviyoConnector:
                 },
             }
         }
-        data = self._request("POST", "/campaign-values-reports/", json_body=body)
+        data = self._request("POST", path, json_body=body)
         return ((data.get("data") or {}).get("attributes") or {}).get("results", []) or []
+
+    def get_daily_campaign_report(
+        self, start_iso: str, end_iso: str, conversion_metric_id: str
+    ) -> list[dict]:
+        """
+        Valori per CAMPAGNA nell'intervallo [start_iso, end_iso). Endpoint
+        campaign-values-report. Ogni result ha groupings (campaign_id) e statistics
+        (conversion_value, opens, clicks, ...). Aggregazioni in src/metrics/klaviyo.py.
+        """
+        return self._values_report(
+            "campaign-values-report", "/campaign-values-reports/",
+            start_iso, end_iso, conversion_metric_id,
+        )
+
+    def get_flow_report(
+        self, start_iso: str, end_iso: str, conversion_metric_id: str
+    ) -> list[dict]:
+        """
+        Valori per FLOW nell'intervallo [start_iso, end_iso). Endpoint flow-values-report.
+        Ogni result ha groupings (flow_id, flow_message_id) e statistics (conversion_value,
+        ...). Richiede lo scope 'Flows:Read' sulla API key. Aggregazioni in metrics/klaviyo.
+        """
+        return self._values_report(
+            "flow-values-report", "/flow-values-reports/",
+            start_iso, end_iso, conversion_metric_id,
+        )
+
+    def get_flow_names(self, flow_ids: list[str]) -> dict[str, str]:
+        """Mappa flow_id -> nome (GET /flows/{id}/). Errori sul singolo id non bloccano."""
+        names: dict[str, str] = {}
+        seen: set[str] = set()
+        for fid in flow_ids:
+            fid = (fid or "").strip()
+            if not fid or fid in seen:
+                continue
+            seen.add(fid)
+            try:
+                data = self._request("GET", f"/flows/{fid}/")
+                name = ((data.get("data") or {}).get("attributes") or {}).get("name")
+                if name:
+                    names[fid] = name
+            except Exception as exc:  # noqa: BLE001 — i nomi sono opzionali
+                print(f"[klaviyo] flow name lookup failed for {fid}: {exc}")
+        return names
 
     def get_campaign_names(self, campaign_ids: list[str]) -> dict[str, str]:
         """

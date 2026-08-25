@@ -60,17 +60,18 @@ class KlaviyoCampaign:
 @dataclass
 class KlaviyoDaily:
     day: str
-    revenue: float = 0.0     # USD
+    revenue: float = 0.0     # USD (CAMPAGNE)
     opens: int = 0
     clicks: int = 0
     conversions: int = 0
     recipients: int = 0
     open_rate: float = 0.0
     click_rate: float = 0.0
+    flow_revenue: Optional[float] = None   # USD (FLOWS); None se non pullato/scope mancante
     campaigns: list[KlaviyoCampaign] = field(default_factory=list)
 
     def as_db_row(self) -> dict:
-        return {
+        row = {
             "day": self.day,
             "revenue": round(self.revenue, 2),
             "opens": self.opens,
@@ -80,6 +81,10 @@ class KlaviyoDaily:
             "open_rate": round(self.open_rate, 4),
             "click_rate": round(self.click_rate, 4),
         }
+        # Colonna nullable (migration 009): inclusa solo se disponibile.
+        if self.flow_revenue is not None:
+            row["flow_revenue"] = round(self.flow_revenue, 2)
+        return row
 
 
 def compute_klaviyo_metrics(
@@ -140,3 +145,33 @@ def compute_klaviyo_metrics(
     # campagne ordinate per revenue decrescente (le più rilevanti prima)
     daily.campaigns.sort(key=lambda c: c.revenue, reverse=True)
     return daily
+
+
+def compute_flow_revenue(
+    raw_results: list[dict], names: Optional[dict[str, str]] = None
+) -> tuple[float, list[dict]]:
+    """
+    Aggrega i result del flow-values-report in (revenue_totale, [per-flow]).
+
+    I result sono per flow_message; li raggruppiamo per flow_id sommando conversion_value.
+    Ritorna (totale_usd, [{flow_id, flow_name, revenue, conversions}, ...]) ordinato per
+    revenue decrescente. Codice puro/deterministico.
+    """
+    names = names or {}
+    by_flow: dict[str, dict] = {}
+    for row in raw_results:
+        groupings = row.get("groupings") or {}
+        stats = row.get("statistics") or {}
+        flow_id = str(groupings.get("flow_id") or "")
+        if not flow_id:
+            continue
+        acc = by_flow.setdefault(flow_id, {
+            "flow_id": flow_id,
+            "flow_name": names.get(flow_id) or "(senza nome)",
+            "revenue": 0.0, "conversions": 0,
+        })
+        acc["revenue"] += _to_float(stats.get("conversion_value"))
+        acc["conversions"] += _to_int(stats.get("conversions"))
+    flows = sorted(by_flow.values(), key=lambda f: f["revenue"], reverse=True)
+    total = sum(f["revenue"] for f in flows)
+    return total, flows
