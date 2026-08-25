@@ -164,8 +164,8 @@ def _compute_monthly() -> dict | None:
 
     # NB: questo compute NON fa chiamate live a Klaviyo (l'endpoint reporting ha un rate
     # limit bassissimo). I valori Klaviyo del DB (snapshot notturni) sono la BASELINE; le
-    # viste live a finestra piena si caricano a parte, in cache e in modo lazy (vedi
-    # _klaviyo_period_cached e _render_monthly_tab).
+    # viste live a finestra piena si caricano a parte, con cache persistente + stale-while-
+    # revalidate (vedi _get_klaviyo e _render_monthly_tab).
     months: list[dict] = []
     for month, rows, partial in filter_visible_months(group_by_month(all_rows), today):
         (m, meta_daily, _mc, tiktok_daily, google_daily,
@@ -220,12 +220,25 @@ def _compute_monthly() -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
-# Klaviyo live (finestra piena) — CACHED per non sforare il rate limit basso.
-# I mesi PASSATI non cambiano -> cache lunga; il mese CORRENTE -> TTL 6h.
-# La funzione RILANCIA in caso di fallimento, così i fallimenti NON vengono messi in
-# cache (verranno ritentati) e un cache-hit è sempre un successo (nessun warning).
+# Klaviyo live (finestra piena) — CACHE PERSISTENTE + STALE-WHILE-REVALIDATE.
+#
+# Rate limit del reporting Klaviyo bassissimo: fetch UNA sola volta per (start,end),
+# RIUSATO da tabella E breakdown (campagne + flows arrivano nello stesso oggetto), mai due
+# volte nello stesso render. I mesi PASSATI, una volta presi con successo, restano in cache
+# a vita di processo (non cambiano). Il mese CORRENTE ha TTL 6h ma se scaduto si SERVE il
+# valore STALE mentre si tenta un refresh: se il refresh fallisce (rate limit) si continua a
+# mostrare lo stale, senza bloccare né mostrare errori. Solo un COLD START senza alcun valore
+# in cache può fallire -> fallback DB etichettato "(snapshot)".
+#
+# Store a livello di modulo: sopravvive ai rerun di Streamlit nello stesso processo.
 # --------------------------------------------------------------------------- #
-def _klaviyo_or_raise(start: str, end: str) -> dict:
+import time as _time  # noqa: E402
+
+_KLA_STORE: dict = {}          # (start,end) -> {"data": kp, "ts": epoch}
+_KLA_TTL = 6 * 3600            # mese corrente: freschezza 6h
+
+
+def _klaviyo_fetch(start: str, end: str) -> dict:
     from src.report import load_klaviyo_period
 
     kp = load_klaviyo_period(start, end)
@@ -234,21 +247,36 @@ def _klaviyo_or_raise(start: str, end: str) -> dict:
     return kp
 
 
-@st.cache_data(ttl=6 * 3600, show_spinner=False)
-def _klaviyo_recent(start: str, end: str) -> dict:
-    """Mese corrente: cache 6h (cambia durante il giorno)."""
-    return _klaviyo_or_raise(start, end)
-
-
-@st.cache_data(ttl=None, show_spinner=False)
-def _klaviyo_archived(start: str, end: str) -> dict:
-    """Mesi passati: non cambiano -> cache per tutta la vita del processo."""
-    return _klaviyo_or_raise(start, end)
-
-
-def _klaviyo_period_cached(start: str, end: str, is_current: bool) -> dict:
-    """Risultato Klaviyo a finestra piena, cache-ato per (start, end). Rilancia sull'errore."""
-    return (_klaviyo_recent if is_current else _klaviyo_archived)(start, end)
+def _get_klaviyo(start: str, end: str, is_current: bool) -> tuple:
+    """
+    Ritorna (kp | None, stale: bool, error: str | None).
+    - past con cache -> servito per sempre (nessun fetch).
+    - current fresco -> servito.
+    - current scaduto -> prova refresh; se fallisce, serve lo STALE (stale=True, no errore
+      bloccante).
+    - nessuna cache -> fetch (cold, sequenziale con Retry-After nel connettore); se fallisce,
+      (None, False, error) -> il chiamante usa il fallback DB "(snapshot)".
+    """
+    key = (start, end)
+    entry = _KLA_STORE.get(key)
+    now = _time.time()
+    if entry is not None:
+        if not is_current or (now - entry["ts"] < _KLA_TTL):
+            return entry["data"], False, None
+        # current & stale -> refresh best-effort, altrimenti servi stale
+        try:
+            kp = _klaviyo_fetch(start, end)
+            _KLA_STORE[key] = {"data": kp, "ts": now}
+            return kp, False, None
+        except Exception as exc:  # noqa: BLE001
+            return entry["data"], True, str(exc)
+    # cold: nessuna cache
+    try:
+        kp = _klaviyo_fetch(start, end)
+        _KLA_STORE[key] = {"data": kp, "ts": now}
+        return kp, False, None
+    except Exception as exc:  # noqa: BLE001
+        return None, False, str(exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -424,16 +452,23 @@ def _render_monthly(months: list[dict], kla: dict) -> None:
     def _mlabel(r):
         return month_label(r["month"]) + (" (partial)" if r.get("partial") else "")
 
-    def _camp(r):
-        k = kla.get(r["month"], {})
-        return float(k["campaigns_revenue"]) if k.get("loaded") else float(r["klaviyo_campaigns_revenue"] or 0.0)
+    def _is_snapshot(r):
+        return bool(kla.get(r["month"], {}).get("snapshot"))
 
-    def _flow(r):
+    def _camp_str(r):
         k = kla.get(r["month"], {})
-        v = k.get("flows_revenue") if k.get("loaded") else r.get("klaviyo_flows_revenue")
-        return (float(v) if v is not None else None)
+        v = float(k.get("campaigns_revenue") or 0.0)
+        return _usd(v) + (" (snapshot)" if _is_snapshot(r) else "")
 
-    # Ordine colonne ESATTO richiesto.
+    def _flow_str(r):
+        k = kla.get(r["month"], {})
+        v = k.get("flows_revenue")
+        if v is None:
+            return "n/a" + (" (snapshot)" if _is_snapshot(r) else "")
+        return _usd(float(v)) + (" (snapshot)" if _is_snapshot(r) else "")
+
+    # Ordine colonne ESATTO richiesto. Le colonne Klaviyo sono stringhe per poter marcare
+    # "(snapshot)" quando è il fallback DB (fetch live fallito).
     df = pd.DataFrame([{
         "Month": _mlabel(r),
         "Revenue": round(r["revenue"], 2),
@@ -448,28 +483,51 @@ def _render_monthly(months: list[dict], kla: dict) -> None:
         "Google ROAS": round(r["google_roas"], 2),
         "TikTok ROAS": round(r.get("tiktok_roas", 0.0), 2),
         "Total ad spend": round(r.get("total_ad_spend", 0.0), 2),
-        "Klaviyo campaigns revenue": round(_camp(r), 2),
-        "Klaviyo flows revenue": (round(_flow(r), 2) if _flow(r) is not None else None),
+        "Klaviyo campaigns revenue": _camp_str(r),
+        "Klaviyo flows revenue": _flow_str(r),
     } for r in months])
     st.dataframe(df, hide_index=True, use_container_width=True)
-    if any(not kla.get(r["month"], {}).get("loaded") for r in months):
-        st.caption("ℹ️ Klaviyo values for some months couldn't be fetched live "
-                   "(rate limit / error) — showing nightly DB snapshots for those.")
+    if any(_is_snapshot(r) for r in months):
+        st.caption("ℹ️ '(snapshot)' = Klaviyo live fetch failed for that month; showing the "
+                   "nightly DB snapshot (may undercount).")
 
 
 def _render_monthly_trend(months: list[dict]) -> None:
-    """#1: Revenue e Net profit aggregati PER MESE (un punto per mese, due serie)."""
+    """#1: BAR chart raggruppato — Revenue e Net profit per mese (da giugno '26), con label."""
+    import altair as alt
+
     from src.dashboard.monthly import month_label
 
-    if not months:
+    vis = [r for r in sorted(months, key=lambda x: x["month"]) if r["month"] >= "2026-06"]
+    if not vis:
         return
-    st.subheader("Revenue & net profit over time")
-    df = pd.DataFrame([{
-        "Month": month_label(r["month"]),
-        "Revenue": round(float(r.get("revenue") or 0), 2),
-        "Net profit": round(float(r.get("net_profit_operativo") or 0), 2),
-    } for r in sorted(months, key=lambda x: x["month"])]).set_index("Month")
-    st.line_chart(df, color=["#1f7a4d", "#8c9196"], height=300)
+    st.subheader("Revenue & net profit by month")
+    order = [month_label(r["month"]) for r in vis]
+    rows = []
+    for r in vis:
+        lbl = month_label(r["month"])
+        rows.append({"Month": lbl, "Metric": "Revenue",
+                     "Value": round(float(r.get("revenue") or 0), 2)})
+        rows.append({"Month": lbl, "Metric": "Net profit",
+                     "Value": round(float(r.get("net_profit_operativo") or 0), 2)})
+    df = pd.DataFrame(rows)
+    palette = alt.Scale(domain=["Revenue", "Net profit"], range=["#1f7a4d", "#8c9196"])
+    base = alt.Chart(df).encode(
+        x=alt.X("Month:N", sort=order, title=None, axis=alt.Axis(labelAngle=0)),
+        xOffset=alt.XOffset("Metric:N"),
+    )
+    bars = base.mark_bar().encode(
+        y=alt.Y("Value:Q", title="USD"),
+        color=alt.Color("Metric:N", scale=palette,
+                        legend=alt.Legend(orient="top", title=None)),
+        tooltip=["Month", "Metric", alt.Tooltip("Value:Q", format="$,.0f")],
+    )
+    labels = base.mark_text(dy=-4, fontSize=11, color="#333").encode(
+        y=alt.Y("Value:Q"),
+        text=alt.Text("Value:Q", format="$,.0f"),
+        detail="Metric:N",
+    )
+    st.altair_chart((bars + labels).properties(height=340), use_container_width=True)
 
 
 def _render_product_units_monthly(units_by_month: dict) -> None:
@@ -540,9 +598,10 @@ def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
             camps = sorted(k.get("campaigns") or [],
                            key=lambda c: float(c.get("revenue") or 0), reverse=True)
             total = sum(float(c.get("revenue") or 0) for c in camps)
-            with st.expander(f"{label} — ${total:,.2f} · {len(camps)} campaigns"):
+            suffix = " · stale (refresh failed)" if k.get("stale") else ""
+            with st.expander(f"{label} — ${total:,.2f} · {len(camps)} campaigns{suffix}"):
                 if k.get("error"):
-                    st.caption(f"⚠️ flows note: {k['error']}")
+                    st.caption(f"⚠️ note: {k['error']}")
                 if camps:
                     df = pd.DataFrame([{
                         "Campaign": c.get("campaign_name", "(no name)"),
@@ -553,38 +612,45 @@ def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
                 else:
                     st.caption("No campaigns in this window.")
         else:
-            # Fallimento live: il TABLE usa lo snapshot DB per questo mese. Nessun bottone —
-            # il fetch è auto e i fallimenti non sono in cache, quindi si ritenta da solo al
-            # prossimo caricamento della pagina.
-            with st.expander(f"{label} — live fetch failed (showing DB snapshot in table)"):
-                st.warning(f"Klaviyo live fetch failed: {k.get('error') or 'unknown error'}")
+            # Fetch live fallito e nessuna cache: mostra il TOTALE dallo snapshot DB.
+            snap = float(k.get("campaigns_revenue") or 0.0)
+            with st.expander(f"{label} — ${snap:,.2f} (snapshot)"):
+                st.warning(f"Live fetch failed: {k.get('error') or 'unknown error'}. "
+                           "Showing the nightly DB snapshot total; per-campaign detail "
+                           "isn't stored, so it's unavailable until the live fetch succeeds.")
 
 
 def _render_klaviyo_flows_monthly(months: list[dict], kla: dict) -> None:
-    """#7: breakdown per-FLOW della revenue Klaviyo per mese (dai dati live in cache)."""
+    """#7: breakdown per-FLOW della revenue Klaviyo per mese. Fallback DB (snapshot) su errore."""
     from src.dashboard.monthly import month_label
 
-    if not any(kla.get(r["month"], {}).get("loaded") for r in months):
-        return
     st.subheader("Klaviyo flow revenue — per-flow breakdown")
     for r in sorted(months, key=lambda x: x["month"], reverse=True):
         month = r["month"]
         kp = kla.get(month, {})
-        if not kp.get("loaded"):
-            continue
-        flows = sorted(kp.get("flows") or [],
-                       key=lambda f: float(f.get("revenue") or 0), reverse=True)
-        total = sum(float(f.get("revenue") or 0) for f in flows)
-        with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(flows)} flows"):
-            if flows:
-                df = pd.DataFrame([{
-                    "Flow": f.get("flow_name", "(no name)"),
-                    "Revenue": round(float(f.get("revenue") or 0), 2),
-                    "Conversions": int(f.get("conversions") or 0),
-                } for f in flows])
-                st.dataframe(df, hide_index=True, use_container_width=True)
-            else:
-                st.caption("No flow revenue in this window (or Flows:Read scope missing).")
+        label = month_label(month)
+        if kp.get("loaded"):
+            flows = sorted(kp.get("flows") or [],
+                           key=lambda f: float(f.get("revenue") or 0), reverse=True)
+            total = sum(float(f.get("revenue") or 0) for f in flows)
+            suffix = " · stale" if kp.get("stale") else ""
+            with st.expander(f"{label} — ${total:,.2f} · {len(flows)} flows{suffix}"):
+                if flows:
+                    df = pd.DataFrame([{
+                        "Flow": f.get("flow_name", "(no name)"),
+                        "Revenue": round(float(f.get("revenue") or 0), 2),
+                        "Conversions": int(f.get("conversions") or 0),
+                    } for f in flows])
+                    st.dataframe(df, hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No flow revenue in this window (or Flows:Read scope missing).")
+        else:
+            # Fallback DB: mostra almeno il TOTALE flows dallo snapshot notturno.
+            snap = kp.get("flows_revenue")
+            snap_s = f"${float(snap):,.2f}" if snap is not None else "n/a"
+            with st.expander(f"{label} — {snap_s} (snapshot)"):
+                st.warning("Live fetch failed; showing the nightly DB flow-revenue total "
+                           "(per-flow detail unavailable until the live fetch succeeds).")
 
 
 def _render_meta_campaigns_monthly(meta_by_month: dict) -> None:
@@ -635,19 +701,17 @@ def _render_unit_economics(months: list[dict]) -> None:
     if not months:
         return
     st.subheader("💰 How much I can spend on ads")
-    st.caption("Per month, from that month's own totals: gross profit per order, break-even "
-               "ROAS, and break-even CPA (the max you can pay for ads per order).")
+    st.caption("Per month, from that month's own totals: break-even CPA (max you can pay for "
+               "ads per order) and break-even ROAS.")
     for r in sorted(months, key=lambda x: x["month"], reverse=True):
         u = month_unit_economics(r["revenue"], r["cogs_total"], r["orders"])
         st.markdown(f"**{month_label(r['month'])}**"
                     + (" _(partial)_" if r.get("partial") else ""))
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Gross profit / order",
-                  _usd(u["gross_per_order"]) if u["gross_per_order"] is not None else "n/a")
+        c1, c2 = st.columns(2)
+        c1.metric("Break-even CPA (max ad $/order)",
+                  _usd(u["be_cpa"]) if u["be_cpa"] is not None else "n/a")
         c2.metric("Break-even ROAS",
                   f"{u['be_roas']:,.2f}x" if u["be_roas"] else "n/a")
-        c3.metric("Break-even CPA (max ad $/order)",
-                  _usd(u["be_cpa"]) if u["be_cpa"] is not None else "n/a")
 
 
 def _render_cost_breakdown_monthly(months: list[dict]) -> None:
@@ -771,30 +835,41 @@ def _render_monthly_tab() -> None:
         return
     months = monthly["months"]
 
-    # Klaviyo (finestra piena) per OGNI mese visibile, AUTO-CARICATO e CACHED. I mesi passati
-    # sono in cache indefinita (non cambiano): al COLD START ognuno viene tirato UNA volta, in
-    # sequenza, rispettando il Retry-After -> il rate limit non viene mai colpito; dopo è tutto
-    # cache (zero chiamate). Uno spinner per mese appare solo mentre il fetch è in corso.
+    # Klaviyo (finestra piena) per OGNI mese visibile — UNA sola fetch condivisa da tabella e
+    # breakdown (campagne + flows nello stesso oggetto). Store persistente + stale-while-
+    # revalidate (vedi _get_klaviyo): cold start sequenziale con Retry-After, poi cache.
     from src.dashboard.monthly import month_label as _ml
 
     kla: dict[str, dict] = {}
-    for r in months:
+    # Ordine di FETCH: mese corrente PRIMA (più importante e più a rischio rate-limit se
+    # ultimo), poi gli altri. L'ordine di RENDER non dipende da questo (kla è per mese).
+    fetch_order = sorted(months, key=lambda r: (not r.get("is_current"), r["month"]))
+    for r in fetch_order:
         month = r["month"]
+        # DB fallback (snapshot notturno) per campagne+flows di questo mese.
+        db_camp = float(r.get("klaviyo_campaigns_revenue") or 0.0)
+        db_flow = r.get("klaviyo_flows_revenue")
         placeholder = st.empty()
-        try:
-            with placeholder, st.spinner(f"Loading Klaviyo — {_ml(month)}…"):
-                kp = _klaviyo_period_cached(r["klaviyo_start"], r["klaviyo_end"], r["is_current"])
+        with placeholder, st.spinner(f"Loading Klaviyo — {_ml(month)}…"):
+            kp, stale, err = _get_klaviyo(r["klaviyo_start"], r["klaviyo_end"], r["is_current"])
+        placeholder.empty()
+        if kp is not None:
             kla[month] = {
-                "loaded": True,
+                "loaded": True, "stale": stale,
                 "campaigns_revenue": float(kp.get("campaigns_revenue") or 0.0),
                 "flows_revenue": kp.get("flows_revenue"),
                 "campaigns": kp.get("campaigns") or [],
                 "flows": kp.get("flows") or [],
-                "error": kp.get("error"),   # eventuale errore SOLO-flows (campagne ok)
+                "error": err or kp.get("error"),   # stale-error o errore SOLO-flows
             }
-        except Exception as exc:  # noqa: BLE001 — fallimento reale -> fallback DB + warning
-            kla[month] = {"loaded": False, "error": str(exc)}
-        placeholder.empty()
+        else:
+            # nessuna cache e fetch fallito -> fallback DB, ETICHETTATO "(snapshot)".
+            kla[month] = {
+                "loaded": False, "stale": False, "snapshot": True,
+                "campaigns_revenue": db_camp,
+                "flows_revenue": db_flow,   # anche i flows fanno fallback al DB
+                "campaigns": [], "flows": [], "error": err,
+            }
 
     # Ordine sezioni richiesto:
     _render_monthly_trend(months)                                        # 1 (per MESE)
