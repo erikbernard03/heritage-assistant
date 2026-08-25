@@ -469,19 +469,20 @@ def shopify_diagnostic() -> str:
     except Exception as exc:  # noqa: BLE001
         out.append(f"  ❌ >60-day orders call failed: {exc}")
 
-    # 3) prova sessioni/visitatori (read_reports, ShopifyQL FROM sessions)
-    out.append("\n— Sessions / visitors probe (read_reports) —")
+    # 3) prova sessioni/visitatori (read_reports, ShopifyQL FROM sessions).
+    #    NON assumiamo "scope mancante": stampiamo l'errore REALE della query se c'è.
+    out.append("\n— Sessions / visitors probe (ShopifyQL FROM sessions) —")
     try:
         y = today - timedelta(days=1)
-        sess = shop.get_sessions(y.isoformat())
+        sess, err, _raw = shop.get_sessions_debug(y.isoformat())
         if sess is not None:
             out.append(f"  ✅ real Shopify sessions for {y}: {sess:,}")
+        elif err:
+            out.append(f"  ❌ ShopifyQL query FAILED (not a scope issue): {err}")
         else:
-            out.append(
-                "  ⚠️ sessions n/a — read_reports missing/denied (dashboard will estimate)."
-            )
+            out.append(f"  ⚠️ no rows returned for {y} (no data that day?).")
     except Exception as exc:  # noqa: BLE001
-        out.append(f"  ❌ sessions call failed: {exc}")
+        out.append(f"  ❌ sessions call raised: {exc}")
 
     # 4) verdetto sui due scope target
     missing = [s for s in ("read_all_orders", "read_reports") if s not in granted]

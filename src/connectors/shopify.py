@@ -27,6 +27,46 @@ import requests
 from config import settings
 
 
+def shopifyql_error(gql: dict) -> Optional[str]:
+    """
+    Ritorna il messaggio d'errore REALE di una risposta shopifyqlQuery, oppure None se
+    la query è andata a buon fine. Sorgenti: `errors` GraphQL (es. ACCESS_DENIED per
+    read_reports mancante) e `parseErrors` di ShopifyQL (sintassi / data source non valido).
+    Serve alla diagnostica per NON confondere un errore di query con "scope mancante".
+    """
+    errs = gql.get("errors")
+    if errs:
+        msgs = [e.get("message") or str(e) for e in errs] if isinstance(errs, list) else [str(errs)]
+        return "GraphQL: " + " | ".join(m for m in msgs if m)
+    node = (gql.get("data") or {}).get("shopifyqlQuery") or {}
+    pe = node.get("parseErrors")
+    if pe:
+        parts = [p if isinstance(p, str) else (p.get("message") or str(p)) for p in pe]
+        return "ShopifyQL parseErrors: " + " | ".join(parts)
+    return None
+
+
+def _shopifyql_first_row(gql: dict) -> Optional[dict]:
+    """
+    Prima riga di una risposta shopifyqlQuery come dict {colonna: valore}, o None.
+
+    ROBUSTO ai due formati di `rows` (JSON): l'API 2026-04 restituisce una LISTA DI
+    OGGETTI già keyati per colonna (es. [{"sessions":"6097", ...}]); versioni/percorsi
+    più vecchi usavano LISTE POSIZIONALI ([[...]]). Gestiamo entrambi.
+    """
+    if shopifyql_error(gql):
+        return None
+    table = ((gql.get("data") or {}).get("shopifyqlQuery") or {}).get("tableData") or {}
+    rows = table.get("rows") or []
+    if not rows:
+        return None
+    row0 = rows[0]
+    if isinstance(row0, dict):
+        return row0
+    cols = [c.get("name") for c in table.get("columns", [])]
+    return dict(zip(cols, row0))
+
+
 def parse_session_conversion_rate(gql: dict) -> Optional[float]:
     """
     Estrae la CVR di negozio (frazione) dalla risposta GraphQL shopifyqlQuery.
@@ -35,17 +75,9 @@ def parse_session_conversion_rate(gql: dict) -> Optional[float]:
     in mancanza, calcola sessions_that_completed_checkout / sessions. None se i dati
     non sono disponibili o l'accesso è negato (scope read_reports mancante).
     """
-    if gql.get("errors"):  # es. ACCESS_DENIED (manca read_reports)
+    rec = _shopifyql_first_row(gql)
+    if rec is None:
         return None
-    node = (gql.get("data") or {}).get("shopifyqlQuery") or {}
-    if node.get("parseErrors"):
-        return None
-    table = node.get("tableData") or {}
-    cols = [c.get("name") for c in table.get("columns", [])]
-    rows = table.get("rows") or []
-    if not rows:
-        return None
-    rec = dict(zip(cols, rows[0]))
 
     def _f(key) -> float:
         try:
@@ -65,17 +97,9 @@ def parse_sessions_count(gql: dict) -> Optional[int]:
     Estrae il numero di SESSIONI (visitatori) dalla risposta GraphQL shopifyqlQuery.
     None se dati non disponibili o accesso negato (scope read_reports mancante).
     """
-    if gql.get("errors"):
+    rec = _shopifyql_first_row(gql)
+    if rec is None:
         return None
-    node = (gql.get("data") or {}).get("shopifyqlQuery") or {}
-    if node.get("parseErrors"):
-        return None
-    table = node.get("tableData") or {}
-    cols = [c.get("name") for c in table.get("columns", [])]
-    rows = table.get("rows") or []
-    if not rows:
-        return None
-    rec = dict(zip(cols, rows[0]))
     try:
         return int(float(rec.get("sessions")))
     except (TypeError, ValueError):
@@ -307,3 +331,13 @@ class ShopifyConnector:
         """
         ql = f"FROM sessions SHOW sessions SINCE {day} UNTIL {day}"
         return parse_sessions_count(self.shopifyql(ql))
+
+    def get_sessions_debug(self, day: str) -> tuple[Optional[int], Optional[str], dict]:
+        """
+        Come get_sessions ma NON inghiotte l'errore: ritorna (sessioni|None, errore|None,
+        risposta_grezza). `errore` è il messaggio REALE (GraphQL/parseErrors) se la query
+        fallisce. Usato da /shopify_check per distinguere errore-di-query da scope mancante.
+        """
+        ql = f"FROM sessions SHOW sessions SINCE {day} UNTIL {day}"
+        gql = self.shopifyql(ql)
+        return parse_sessions_count(gql), shopifyql_error(gql), gql

@@ -2,7 +2,11 @@
 Test deterministici della CVR di negozio da Shopify (ShopifyQL) e dell'uso nel report.
 Nessuna rete: si testa il parsing della risposta GraphQL e il render del report.
 """
-from src.connectors.shopify import parse_session_conversion_rate
+from src.connectors.shopify import (
+    parse_session_conversion_rate,
+    parse_sessions_count,
+    shopifyql_error,
+)
 from src.metrics.profit import DailyMetrics
 from src.report import format_report
 
@@ -19,6 +23,48 @@ def _table(columns, row):
             }
         }
     }
+
+
+def _table_obj(row_obj):
+    """Risposta 2026-04 REALE: rows = lista di OGGETTI keyati per colonna."""
+    return {
+        "data": {
+            "shopifyqlQuery": {
+                "tableData": {
+                    "columns": [{"name": k, "dataType": "INTEGER"} for k in row_obj],
+                    "rows": [row_obj],
+                },
+                "parseErrors": [],
+            }
+        }
+    }
+
+
+def test_cvr_and_sessions_parse_object_rows_2026_04_format():
+    # rows come oggetti keyati per colonna (formato reale api 2026-04)
+    gql = _table_obj({
+        "sessions": "6097",
+        "sessions_that_completed_checkout": "17",
+        "conversion_rate": "0.002788256519599803",
+    })
+    assert parse_sessions_count(gql) == 6097
+    assert round(parse_session_conversion_rate(gql), 6) == 0.002788
+
+
+def test_sessions_parse_positional_rows_legacy_format():
+    gql = _table(["sessions"], [42])
+    assert parse_sessions_count(gql) == 42
+
+
+def test_shopifyql_error_surfaces_graphql_and_parse_errors():
+    # errore GraphQL (es. access denied)
+    assert "Access denied" in (
+        shopifyql_error({"errors": [{"message": "Access denied for field"}]}) or "")
+    # parseErrors di ShopifyQL (query/data source non valido)
+    assert "Unknown table" in (
+        shopifyql_error({"data": {"shopifyqlQuery": {"parseErrors": ["Unknown table x"]}}}) or "")
+    # nessun errore -> None
+    assert shopifyql_error(_table_obj({"sessions": "10"})) is None
 
 
 def test_cvr_uses_native_conversion_rate():
