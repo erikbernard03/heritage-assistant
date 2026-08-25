@@ -494,8 +494,8 @@ def _render_product_units_monthly(units_by_month: dict) -> None:
 
 def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
     """
-    Breakdown per-campagna Klaviyo (finestra piena), LAZY: il mese corrente è già caricato;
-    i mesi passati mostrano un bottone "Load email details" per caricarli on-demand (cache).
+    Breakdown per-campagna Klaviyo (finestra piena). Tutti i mesi sono già stati auto-caricati
+    (in cache) dal tab: qui si mostra solo il dettaglio per-campagna, senza altre chiamate API.
     """
     from src.dashboard.monthly import month_label
 
@@ -527,12 +527,11 @@ def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
                 else:
                     st.caption("No campaigns in this window.")
         else:
+            # Fallimento live: il TABLE usa lo snapshot DB per questo mese. Nessun bottone —
+            # il fetch è auto e i fallimenti non sono in cache, quindi si ritenta da solo al
+            # prossimo caricamento della pagina.
             with st.expander(f"{label} — live fetch failed (showing DB snapshot in table)"):
-                if k.get("error"):
-                    # #4: warning SOLO su fallimento reale (non su cache hit).
-                    st.warning(f"Klaviyo live fetch failed: {k['error']}")
-                if st.button("🔄 Retry", key=f"btn_kla_{month}"):
-                    st.rerun()   # i fallimenti non sono in cache -> ritenta al rerun
+                st.warning(f"Klaviyo live fetch failed: {k.get('error') or 'unknown error'}")
 
 
 # --------------------------------------------------------------------------- #
@@ -570,15 +569,19 @@ def _render_monthly_tab() -> None:
         return
     months = monthly["months"]
 
-    # Klaviyo (finestra piena) per OGNI mese visibile, CACHED. I mesi passati sono in cache
-    # indefinita (non cambiano): al primo load ognuno viene tirato UNA volta (in sequenza,
-    # rispettando il Retry-After), poi è tutto cache -> rate limit rispettato. Il TABLE usa
-    # questi valori live; l'espansore mostra solo il dettaglio per-campagna (già in cache).
+    # Klaviyo (finestra piena) per OGNI mese visibile, AUTO-CARICATO e CACHED. I mesi passati
+    # sono in cache indefinita (non cambiano): al COLD START ognuno viene tirato UNA volta, in
+    # sequenza, rispettando il Retry-After -> il rate limit non viene mai colpito; dopo è tutto
+    # cache (zero chiamate). Uno spinner per mese appare solo mentre il fetch è in corso.
+    from src.dashboard.monthly import month_label as _ml
+
     kla: dict[str, dict] = {}
     for r in months:
         month = r["month"]
+        placeholder = st.empty()
         try:
-            kp = _klaviyo_period_cached(r["klaviyo_start"], r["klaviyo_end"], r["is_current"])
+            with placeholder, st.spinner(f"Loading Klaviyo — {_ml(month)}…"):
+                kp = _klaviyo_period_cached(r["klaviyo_start"], r["klaviyo_end"], r["is_current"])
             kla[month] = {
                 "loaded": True,
                 "campaigns_revenue": float(kp.get("campaigns_revenue") or 0.0),
@@ -588,6 +591,7 @@ def _render_monthly_tab() -> None:
             }
         except Exception as exc:  # noqa: BLE001 — fallimento reale -> fallback DB + warning
             kla[month] = {"loaded": False, "error": str(exc)}
+        placeholder.empty()
 
     _render_monthly(months, kla)
     _render_product_units_monthly(monthly["units_by_month"])
