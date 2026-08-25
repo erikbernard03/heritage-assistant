@@ -66,8 +66,18 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 FEE_PAGAMENTI = 0.075          # 7.5% sul revenue
 SPEDIZIONE_PER_ORDINE = 7      # USD flat per ordine
 INCLUDI_COSTI_FISSI_IN_NET_PROFIT = True
-COSTI_FISSI_MENSILI = 6117     # USD (personale + software)
-GIORNI_MESE_ALLOCAZIONE = 30   # quota giornaliera = COSTI_FISSI_MENSILI / 30
+COSTI_FISSI_MENSILI = 6117     # USD (valore CORRENTE; retro-compat)
+GIORNI_MESE_ALLOCAZIONE = 30   # quota giornaliera = costo_mensile_in_vigore / 30
+
+# Costi fissi mensili STORICI (dated): ogni giorno usa il valore IN VIGORE a quella data.
+# `from` = prima data (inclusa) in cui vale `monthly`. Ordinati per data crescente.
+# Default = date dei commit di modifica (da confermare):
+#   5668 dall'inizio · 7666 dal 2026-06-11 · 6117 dal 2026-08-02.
+FIXED_COSTS_SCHEDULE = [
+    {"from": "2000-01-01", "monthly": 5668},
+    {"from": "2026-06-11", "monthly": 7666},
+    {"from": "2026-08-02", "monthly": 6117},
+]
 
 # Soglie alert (Fase 2+ per la parte ads, qui solo predisposte)
 BREAK_EVEN_ROAS = 1.58

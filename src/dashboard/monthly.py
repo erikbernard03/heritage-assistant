@@ -179,5 +179,100 @@ def units_by_month(product_units_rows: list[dict]) -> dict[str, dict[str, int]]:
     return {k: by[k] for k in sorted(by)}
 
 
+def _f(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def meta_campaigns_by_month(camp_rows: list[dict]) -> dict[str, list[dict]]:
+    """
+    Aggrega meta_campaigns per (mese, campagna): spend/revenue/orders sommati; ROAS=rev/spend,
+    CPA=spend/orders. Ritorna {mese: [ {campaign_name, spend, revenue, orders, roas, cpa} ]}
+    ordinato per spend decrescente.
+    """
+    by: dict[str, dict] = {}
+    for r in camp_rows:
+        month = str(r.get("day", ""))[:7]
+        key = (month, str(r.get("campaign_id") or ""),
+               r.get("campaign_name") or "(no name)")
+        acc = by.setdefault(key, {"campaign_name": key[2], "spend": 0.0,
+                                  "revenue": 0.0, "orders": 0})
+        acc["spend"] += _f(r.get("spend"))
+        acc["revenue"] += _f(r.get("revenue"))
+        acc["orders"] += int(_f(r.get("orders")))
+    out: dict[str, list[dict]] = {}
+    for (month, _cid, _name), acc in by.items():
+        acc["roas"] = (acc["revenue"] / acc["spend"]) if acc["spend"] else 0.0
+        acc["cpa"] = (acc["spend"] / acc["orders"]) if acc["orders"] else 0.0
+        out.setdefault(month, []).append(acc)
+    for month in out:
+        out[month].sort(key=lambda c: c["spend"], reverse=True)
+    return {k: out[k] for k in sorted(out)}
+
+
+def google_by_month(google_rows: list[dict]) -> dict[str, dict]:
+    """Totali Google (account-level) per mese: {mese: {spend, revenue, orders, roas, cpa}}."""
+    by: dict[str, dict] = {}
+    for r in google_rows:
+        month = str(r.get("day", ""))[:7]
+        acc = by.setdefault(month, {"spend": 0.0, "revenue": 0.0, "orders": 0})
+        acc["spend"] += _f(r.get("spend"))
+        acc["revenue"] += _f(r.get("revenue"))
+        acc["orders"] += int(_f(r.get("orders")))
+    for acc in by.values():
+        acc["roas"] = (acc["revenue"] / acc["spend"]) if acc["spend"] else 0.0
+        acc["cpa"] = (acc["spend"] / acc["orders"]) if acc["orders"] else 0.0
+    return {k: by[k] for k in sorted(by)}
+
+
+def gross_and_blended(revenue: float, cogs: float,
+                      total_ad_spend: float) -> tuple[float, Optional[float]]:
+    """Gross profit = revenue − COGS ; Blended ROAS = revenue ÷ ad spend (None se spend 0)."""
+    gross = _f(revenue) - _f(cogs)
+    blended = (_f(revenue) / _f(total_ad_spend)) if _f(total_ad_spend) > 0 else None
+    return gross, blended
+
+
+def fixed_alloc_for_month(day_strs: list[str]) -> float:
+    """Somma della quota costi fissi DATATA sui giorni con dati del mese (mid-month safe)."""
+    from src.metrics.fixed_costs import daily_fixed_allocation
+
+    return sum(daily_fixed_allocation(d) for d in day_strs)
+
+
+# --------------------------------------------------------------------------- #
+# Goals (#11)
+# --------------------------------------------------------------------------- #
+MONTHLY_GOALS = {
+    "2026-09": {"goal": 124000, "per_day": 4133, "orders_per_day": 37},
+    "2026-10": {"goal": 200000, "per_day": 6452, "orders_per_day": 58},
+    "2026-11": {"goal": 400000, "per_day": 13333, "orders_per_day": 118},
+    "2026-12": {"goal": 400000, "per_day": 12903, "orders_per_day": 115},
+}
+
+
+def goal_progress(revenue_so_far: float, goal: float, day_of_month: int,
+                  days_in_month: int) -> dict:
+    """
+    Avanzamento vs obiettivo mensile. Ritorna pct, needed/day (sull'intero mese),
+    actual/day (sui giorni trascorsi), projected (a fine mese al ritmo attuale), on_pace.
+    """
+    goal = _f(goal)
+    rev = _f(revenue_so_far)
+    day_of_month = max(int(day_of_month), 1)
+    days_in_month = max(int(days_in_month), 1)
+    pct = (rev / goal * 100.0) if goal else None
+    needed_per_day = (goal / days_in_month) if goal else None
+    actual_per_day = rev / day_of_month
+    projected = actual_per_day * days_in_month
+    on_pace = (projected >= goal) if goal else None
+    return {
+        "pct": pct, "needed_per_day": needed_per_day, "actual_per_day": actual_per_day,
+        "projected": projected, "on_pace": on_pace, "remaining": max(goal - rev, 0.0),
+    }
+
+
 def _margin_pct(numer: float, denom: float) -> Optional[float]:
     return (numer / denom * 100.0) if denom else None

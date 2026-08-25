@@ -170,9 +170,10 @@ def compute_daily_metrics(
     m.ads_spend = ads_spend
 
     if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
-        m.fixed_cost_daily = (
-            settings.COSTI_FISSI_MENSILI / settings.GIORNI_MESE_ALLOCAZIONE
-        )
+        # Quota giornaliera DATATA: usa il costo fisso mensile in vigore al giorno `day`.
+        from src.metrics.fixed_costs import daily_fixed_allocation
+
+        m.fixed_cost_daily = daily_fixed_allocation(day)
 
     m.net_profit_operativo = (
         m.revenue - m.cogs_total - m.shipping_total - m.payment_fees - m.ads_spend

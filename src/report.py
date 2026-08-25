@@ -739,6 +739,16 @@ def _persist_product_units(store, metrics: DailyMetrics) -> None:
         print(f"[report] ⚠️ product_units non salvate per {metrics.day}: {exc}")
 
 
+def _persist_sales_by_country(store, day: str, orders: list[dict]) -> None:
+    """Calcola le vendite per paese del giorno e le salva (best-effort)."""
+    try:
+        from src.metrics.sales_location import revenue_by_country
+
+        store.upsert_sales_by_country(day, revenue_by_country(orders))
+    except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
+        print(f"[report] ⚠️ sales_by_country non salvate per {day}: {exc}")
+
+
 def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics) -> None:
     """Salva su Supabase se configurato; non blocca il report in caso di assenza DB."""
     try:
@@ -749,6 +759,7 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         store.upsert_line_items(metrics)
         store.upsert_daily_metrics(metrics)
         _persist_product_units(store, metrics)
+        _persist_sales_by_country(store, metrics.day, orders)
         print(
             f"[report] daily_metrics PERSISTED day={metrics.day} "
             f"orders={metrics.num_orders} revenue=${metrics.revenue:,.2f}"
@@ -821,6 +832,7 @@ def backfill_daily_metrics(
             store.upsert_line_items(m)
             store.upsert_daily_metrics(m)
             _persist_product_units(store, m)   # unità vendute per prodotto (Fase 5)
+            _persist_sales_by_country(store, w.day_str, orders)   # vendite per paese (Fase 6)
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
                 (w.day_str, m.num_orders, round(m.revenue, 2),

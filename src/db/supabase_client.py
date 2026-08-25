@@ -117,6 +117,24 @@ class SupabaseStore:
         self.client.table("product_units_daily").insert(rows).execute()
         return len(rows)
 
+    # ----------------------------------------------- sales by country (Fase 6)
+    def upsert_sales_by_country(self, day: str, by_country: dict[str, dict]) -> int:
+        """
+        Riscrive le vendite per paese del giorno `day` (DELETE-then-INSERT: l'insieme dei
+        paesi può cambiare tra run). by_country: {country: {revenue, orders}}.
+        """
+        self.client.table("sales_by_country_daily").delete().eq("day", day).execute()
+        rows = [
+            {"day": day, "country": c, "revenue": round(float(v.get("revenue") or 0), 2),
+             "orders": int(v.get("orders") or 0)}
+            for c, v in (by_country or {}).items()
+            if int(v.get("orders") or 0) != 0
+        ]
+        if not rows:
+            return 0
+        self.client.table("sales_by_country_daily").insert(rows).execute()
+        return len(rows)
+
     # ----------------------------------------------------- letture (read-only)
     def get_recent_daily_metrics(self, days: int = 14) -> list[dict]:
         """Ultime N righe di daily_metrics (più recenti prima)."""
@@ -170,7 +188,7 @@ class SupabaseStore:
     _RANGE_TABLES = {
         "daily_metrics", "meta_daily", "meta_campaigns", "tiktok_daily",
         "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
-        "product_units_daily",
+        "product_units_daily", "sales_by_country_daily",
     }
 
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:

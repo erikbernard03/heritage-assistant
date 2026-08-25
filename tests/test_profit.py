@@ -103,10 +103,10 @@ def test_daily_metrics_basic():
     assert round(m.payment_fees, 2) == 11.25
     # operativo = 150 - 54 - 14 - 11.25 - 0 = 70.75
     assert round(m.net_profit_operativo, 2) == 70.75
-    # costi fissi giornalieri = 6117/30 = 203.90
-    assert round(m.fixed_cost_daily, 2) == 203.90
-    # netto = 70.75 - 203.90 = -133.15
-    assert round(m.net_profit_netto, 2) == -133.15
+    # costi fissi DATATI: 2026-05-29 è PRIMA del 2026-06-11 -> 5668/30 = 188.93
+    assert round(m.fixed_cost_daily, 2) == 188.93
+    # netto = 70.75 - 188.93 = -118.18
+    assert round(m.net_profit_netto, 2) == -118.18
     # AOV = 150/2 = 75
     assert m.aov == 75.0
 

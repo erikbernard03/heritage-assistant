@@ -181,6 +181,7 @@ def _compute_monthly() -> dict | None:
             "month": month, "partial": partial,
             "is_current": month == current_month,
             "klaviyo_start": m_start, "klaviyo_end": m_end,
+            "day_strs": sorted(r2["day"] for r2 in rows),   # per la quota costi fissi datata
             "revenue": m.revenue, "orders": m.num_orders, "aov": m.aov,
             # CVR mensile = ordini ÷ sessioni reali (None -> "n/a", non 0.00%)
             "store_cvr": monthly_store_cvr(rows),
@@ -189,6 +190,9 @@ def _compute_monthly() -> dict | None:
             "google_roas": float((google_daily or {}).get("roas") or 0.0),
             "tiktok_roas": float((tiktok_daily or {}).get("roas") or 0.0),
             "total_ad_spend": float(m.ads_spend or 0.0),   # Meta + TikTok + Google
+            "cogs_total": float(m.cogs_total or 0.0),
+            "shipping_total": float(m.shipping_total or 0.0),
+            "payment_fees": float(m.payment_fees or 0.0),
             # BASELINE dal DB (snapshot notturni); il TABLE usa i valori live (vedi tab).
             "klaviyo_campaigns_revenue": float((db_klaviyo or {}).get("revenue") or 0.0),
             "klaviyo_flows_revenue": (db_klaviyo or {}).get("flow_revenue"),
@@ -196,8 +200,31 @@ def _compute_monthly() -> dict | None:
             "net_profit_netto": m.net_profit_netto,
         })
 
+    from src.dashboard.monthly import (
+        google_by_month,
+        meta_campaigns_by_month,
+    )
+    from src.metrics.sales_location import sales_by_country_by_month
+
+    visible = {r["month"] for r in months}
     units_rows = store.get_table_range("product_units_daily", "2000-01-01", today_iso)
-    return {"months": months, "units_by_month": units_by_month(units_rows)}
+    meta_camp_rows = store.get_table_range("meta_campaigns", "2000-01-01", today_iso)
+    google_rows = store.get_table_range("google_daily", "2000-01-01", today_iso)
+    country_rows = store.get_table_range("sales_by_country_daily", "2000-01-01", today_iso)
+    # righe daily solo dei mesi visibili (per il trend line-chart)
+    trend_rows = sorted((r for r in all_rows if r["day"][:7] in visible),
+                        key=lambda r: r["day"])
+    return {
+        "months": months,
+        "units_by_month": units_by_month(units_rows),
+        "meta_campaigns_by_month": meta_campaigns_by_month(meta_camp_rows),
+        "google_by_month": google_by_month(google_rows),
+        "sales_by_country_by_month": sales_by_country_by_month(country_rows),
+        "trend_rows": [{"day": r["day"],
+                        "revenue": float(r.get("revenue") or 0),
+                        "net_profit_operativo": float(r.get("net_profit_operativo") or 0)}
+                       for r in trend_rows],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -437,13 +464,18 @@ def _render_monthly(months: list[dict], kla: dict) -> None:
         st.caption("ℹ️ Klaviyo values for some months couldn't be fetched live "
                    "(rate limit / error) — showing nightly DB snapshots for those.")
 
-    bars = pd.DataFrame([{
-        "month": _mlabel(r),
-        "Revenue": round(r["revenue"], 2),
-        "Net profit (op)": round(r["net_profit_operativo"], 2),
-    } for r in months]).set_index("month")
-    st.caption("Revenue & net profit by month")
-    st.bar_chart(bars, height=240)
+
+def _render_monthly_trend(trend_rows: list[dict]) -> None:
+    """#1: line chart in stile Shopify — Revenue e Net profit per giorno, stesse assi."""
+    if not trend_rows:
+        return
+    st.subheader("Revenue & net profit over time")
+    df = pd.DataFrame([{
+        "day": r["day"],
+        "Revenue": round(float(r.get("revenue") or 0), 2),
+        "Net profit": round(float(r.get("net_profit_operativo") or 0), 2),
+    } for r in trend_rows]).set_index("day")
+    st.line_chart(df, color=["#1f7a4d", "#8c9196"], height=300)
 
 
 def _render_product_units_monthly(units_by_month: dict) -> None:
@@ -534,6 +566,177 @@ def _render_klaviyo_breakdown(months: list[dict], kla: dict) -> None:
                 st.warning(f"Klaviyo live fetch failed: {k.get('error') or 'unknown error'}")
 
 
+def _render_klaviyo_flows_monthly(months: list[dict], kla: dict) -> None:
+    """#7: breakdown per-FLOW della revenue Klaviyo per mese (dai dati live in cache)."""
+    from src.dashboard.monthly import month_label
+
+    if not any(kla.get(r["month"], {}).get("loaded") for r in months):
+        return
+    st.subheader("Klaviyo flow revenue — per-flow breakdown")
+    for r in sorted(months, key=lambda x: x["month"], reverse=True):
+        month = r["month"]
+        kp = kla.get(month, {})
+        if not kp.get("loaded"):
+            continue
+        flows = sorted(kp.get("flows") or [],
+                       key=lambda f: float(f.get("revenue") or 0), reverse=True)
+        total = sum(float(f.get("revenue") or 0) for f in flows)
+        with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(flows)} flows"):
+            if flows:
+                df = pd.DataFrame([{
+                    "Flow": f.get("flow_name", "(no name)"),
+                    "Revenue": round(float(f.get("revenue") or 0), 2),
+                    "Conversions": int(f.get("conversions") or 0),
+                } for f in flows])
+                st.dataframe(df, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No flow revenue in this window (or Flows:Read scope missing).")
+
+
+def _render_meta_campaigns_monthly(meta_by_month: dict) -> None:
+    """#4: tabella campagne Meta per mese (spend, revenue, orders, ROAS, CPA)."""
+    from src.dashboard.monthly import month_label
+
+    if not meta_by_month:
+        return
+    st.subheader("Meta campaigns — per month")
+    for month in sorted(meta_by_month, reverse=True):
+        camps = meta_by_month[month]
+        spend = sum(c["spend"] for c in camps)
+        with st.expander(f"{month_label(month)} — spend ${spend:,.2f} · {len(camps)} campaigns"):
+            df = pd.DataFrame([{
+                "Campaign": c["campaign_name"],
+                "Spend": round(c["spend"], 2),
+                "Revenue": round(c["revenue"], 2),
+                "Orders": int(c["orders"]),
+                "ROAS": round(c["roas"], 2),
+                "CPA": (round(c["cpa"], 2) if c["orders"] else None),
+            } for c in camps])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+def _render_google_monthly(google_by_month: dict) -> None:
+    """#5: totali Google (account level, via Triple Whale) per mese."""
+    if not google_by_month:
+        return
+    st.subheader("Google Ads — per month (account level)")
+    st.caption("Google is account-level only (Triple Whale) — no per-campaign breakdown.")
+    from src.dashboard.monthly import month_label
+
+    df = pd.DataFrame([{
+        "Month": month_label(mn),
+        "Spend": round(g["spend"], 2),
+        "Revenue": round(g["revenue"], 2),
+        "Orders": int(g["orders"]),
+        "ROAS": round(g["roas"], 2),
+        "CPA": (round(g["cpa"], 2) if g["orders"] else None),
+    } for mn, g in sorted(google_by_month.items(), reverse=True)])
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+def _render_gross_blended(months: list[dict]) -> None:
+    """#8: Gross profit (rev − COGS) e Blended ROAS (rev ÷ ad spend), GRANDI e in evidenza."""
+    from src.dashboard.monthly import gross_and_blended, month_label
+
+    if not months:
+        return
+    st.subheader("💚 Gross profit & blended ROAS")
+    for r in sorted(months, key=lambda x: x["month"], reverse=True):
+        gross, blended = gross_and_blended(r["revenue"], r["cogs_total"], r["total_ad_spend"])
+        st.markdown(f"**{month_label(r['month'])}**"
+                    + (" _(partial)_" if r.get("partial") else ""))
+        c1, c2 = st.columns(2)
+        c1.metric("Gross profit (rev − COGS)", _usd(gross))
+        c2.metric("Blended ROAS (rev ÷ ad spend)",
+                  f"{blended:,.2f}x" if blended is not None else "n/a")
+
+
+def _render_cost_breakdown_monthly(months: list[dict]) -> None:
+    """#9: cost breakdown per mese — COGS, shipping, fees, ad spend, fixed (quota DATATA)."""
+    from src.dashboard.monthly import fixed_alloc_for_month, month_label
+
+    if not months:
+        return
+    st.subheader("Cost breakdown — per month")
+    rows = []
+    for r in sorted(months, key=lambda x: x["month"], reverse=True):
+        fixed = fixed_alloc_for_month(r.get("day_strs") or [])
+        rows.append({
+            "Month": month_label(r["month"]),
+            "COGS": round(r["cogs_total"], 2),
+            "Shipping": round(r["shipping_total"], 2),
+            "Payment fees": round(r["payment_fees"], 2),
+            "Ad spend": round(r["total_ad_spend"], 2),
+            "Fixed allocation": round(fixed, 2),
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("Fixed allocation uses the monthly fixed cost in force at each day "
+               "($5,668 → $7,666 from 2026-06-11 → $6,117 from 2026-08-02), ÷30 per day.")
+
+
+def _render_sales_by_location(sales_by_month: dict) -> None:
+    """#10: vendite per PAESE per mese (bar chart della revenue per country)."""
+    from src.dashboard.monthly import month_label
+
+    if not sales_by_month:
+        st.subheader("Sales by location — per month")
+        st.caption("No country data yet — run /backfill after applying migration 010.")
+        return
+    st.subheader("Sales by location — per month")
+    for month in sorted(sales_by_month, reverse=True):
+        by_country = sales_by_month[month]
+        total = sum(v["revenue"] for v in by_country.values())
+        ordered = sorted(by_country.items(), key=lambda kv: kv[1]["revenue"], reverse=True)
+        with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(ordered)} countries"):
+            chart = pd.DataFrame(
+                {"Revenue": [round(v["revenue"], 2) for _c, v in ordered]},
+                index=[c for c, _v in ordered],
+            )
+            st.bar_chart(chart, height=260)
+            df = pd.DataFrame([{
+                "Country": c,
+                "Revenue": round(v["revenue"], 2),
+                "Orders": int(v["orders"]),
+                "% of month": (round(v["revenue"] / total * 100, 1) if total else 0.0),
+            } for c, v in ordered])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+def _render_goals(months: list[dict]) -> None:
+    """#11: obiettivi mensili (statici) + avanzamento del mese corrente vs obiettivo."""
+    from src.dashboard.monthly import MONTHLY_GOALS, goal_progress, month_label
+
+    st.subheader("🎯 Goals")
+
+    # Avanzamento del mese corrente (se ha un obiettivo).
+    current = next((r for r in months if r.get("is_current")), None)
+    if current and current["month"] in MONTHLY_GOALS:
+        import calendar
+
+        g = MONTHLY_GOALS[current["month"]]
+        y, mo = (int(x) for x in current["month"].split("-"))
+        days_in_month = calendar.monthrange(y, mo)[1]
+        day_of_month = int(max(current.get("day_strs") or [current["month"] + "-01"])[8:10])
+        p = goal_progress(current["revenue"], g["goal"], day_of_month, days_in_month)
+        st.markdown(f"**{month_label(current['month'])} — progress vs ${g['goal']:,} goal**")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Revenue so far", _usd(current["revenue"]),
+                  f"{p['pct']:.1f}% of goal" if p["pct"] is not None else None)
+        c2.metric("Pace ($/day)", _usd(p["actual_per_day"]),
+                  f"need {_usd(p['needed_per_day'])}/day" if p["needed_per_day"] else None)
+        c3.metric("Projected month-end", _usd(p["projected"]),
+                  "on pace ✅" if p["on_pace"] else "behind ⚠️")
+        st.progress(min((p["pct"] or 0) / 100.0, 1.0))
+
+    df = pd.DataFrame([{
+        "Month": month_label(mn),
+        "Goal": f"${g['goal']:,}",
+        "Per day": f"${g['per_day']:,}",
+        "Orders/day": g["orders_per_day"],
+    } for mn, g in MONTHLY_GOALS.items()])
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -587,15 +790,25 @@ def _render_monthly_tab() -> None:
                 "campaigns_revenue": float(kp.get("campaigns_revenue") or 0.0),
                 "flows_revenue": kp.get("flows_revenue"),
                 "campaigns": kp.get("campaigns") or [],
+                "flows": kp.get("flows") or [],
                 "error": kp.get("error"),   # eventuale errore SOLO-flows (campagne ok)
             }
         except Exception as exc:  # noqa: BLE001 — fallimento reale -> fallback DB + warning
             kla[month] = {"loaded": False, "error": str(exc)}
         placeholder.empty()
 
-    _render_monthly(months, kla)
-    _render_product_units_monthly(monthly["units_by_month"])
-    _render_klaviyo_breakdown(months, kla)
+    # Ordine sezioni richiesto:
+    _render_monthly_trend(monthly.get("trend_rows") or [])                 # 1
+    _render_monthly(months, kla)                                          # 2
+    _render_product_units_monthly(monthly["units_by_month"])              # 3
+    _render_meta_campaigns_monthly(monthly.get("meta_campaigns_by_month") or {})   # 4
+    _render_google_monthly(monthly.get("google_by_month") or {})          # 5
+    _render_klaviyo_breakdown(months, kla)                                # 6
+    _render_klaviyo_flows_monthly(months, kla)                            # 7
+    _render_gross_blended(months)                                        # 8
+    _render_cost_breakdown_monthly(months)                               # 9
+    _render_sales_by_location(monthly.get("sales_by_country_by_month") or {})   # 10
+    _render_goals(months)                                                # 11
 
 
 def main() -> None:
