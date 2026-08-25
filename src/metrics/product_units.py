@@ -79,16 +79,18 @@ def product_bucket(handle: Optional[str], title: Optional[str] = None, resolver=
     """
     Bucket di visualizzazione di un line item per la tabella unità/mese.
 
-    - Se combacia una FAMIGLIA nominata -> la sua chiave canonica (es. 'gold_signet_round').
-    - Altrimenti (quello che prima finiva in 'other') -> il TITOLO Shopify reale del prodotto,
-      così OGNI prodotto (es. i bracciali Edge/Bead/Cable/FAITH) appare con il suo nome e
-      non resta nascosto in un secchio generico. Fallback 'other' solo se manca il titolo.
+    - Se combacia una FAMIGLIA SIGNET/nominata (gold/white/square/sterling signet, coat of
+      arms, wooden box, size adjuster) -> la sua chiave canonica (es. 'gold_signet_round').
+    - Altrimenti — inclusi i 'classic/stone rings' (Carnelian, Onyx, Tiger's Eye, Lapis…) e
+      i bracciali (Edge/Bead/Cable/FAITH) — usa il TITOLO Shopify reale del prodotto, così
+      OGNI modello appare con il suo nome e nulla resta nascosto in un secchio di famiglia.
+      Fallback alla chiave ('other'/'classic_stone_ring') solo se manca il titolo.
     """
     key = classify_product_key(handle, title, resolver=resolver)
-    if key != "other":
-        return key
-    t = (title or "").strip()
-    return t if t else "other"
+    if key in ("other", "classic_stone_ring"):
+        t = (title or "").strip()
+        return t if t else key
+    return key
 
 
 def units_by_key_from_line_items(line_items, resolver=None) -> dict[str, int]:

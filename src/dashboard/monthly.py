@@ -179,42 +179,5 @@ def units_by_month(product_units_rows: list[dict]) -> dict[str, dict[str, int]]:
     return {k: by[k] for k in sorted(by)}
 
 
-def klaviyo_campaigns_by_month(campaign_rows: list[dict]) -> dict[str, list[dict]]:
-    """
-    Breakdown per-campagna della revenue Klaviyo per mese (per verifica manuale).
-
-    ATTRIBUZIONE: klaviyo_campaigns ha una riga (day, campaign_id, campaign_name, revenue)
-    per OGNI giorno in cui la campagna compare nella query giornaliera (timeframe = quel
-    giorno). Il totale mensile della dashboard somma queste revenue giornaliere. Qui, per
-    ogni mese, aggreghiamo per campagna: revenue totale (somma dei giorni), numero di
-    GIORNI in cui la campagna appare, e i giorni min/max. Se una campagna appare in molti
-    giorni con revenue ripetuta, è il segnale della finestra di attribuzione Klaviyo che
-    spalma i valori su più giorni (possibile doppio conteggio nel totale mensile).
-
-    Ritorna {mese: [ {campaign_name, campaign_id, revenue, days, first_day, last_day}... ]}
-    ordinato per revenue decrescente.
-    """
-    by: dict[str, dict[str, dict]] = {}
-    for r in campaign_rows:
-        month = month_of(r["day"])
-        cid = str(r.get("campaign_id") or "")
-        acc = by.setdefault(month, {}).setdefault(cid, {
-            "campaign_id": cid,
-            "campaign_name": r.get("campaign_name") or "(no name)",
-            "revenue": 0.0, "days": 0, "first_day": r["day"], "last_day": r["day"],
-        })
-        try:
-            acc["revenue"] += float(r.get("revenue") or 0)
-        except (TypeError, ValueError):
-            pass
-        acc["days"] += 1
-        acc["first_day"] = min(acc["first_day"], r["day"])
-        acc["last_day"] = max(acc["last_day"], r["day"])
-    out: dict[str, list[dict]] = {}
-    for month in sorted(by):
-        out[month] = sorted(by[month].values(), key=lambda c: c["revenue"], reverse=True)
-    return out
-
-
 def _margin_pct(numer: float, denom: float) -> Optional[float]:
     return (numer / denom * 100.0) if denom else None

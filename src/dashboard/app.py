@@ -142,16 +142,17 @@ def _compute_monthly() -> dict | None:
     Vista MENSILE: un record per mese di calendario con dati. Riusa aggregate_period
     (stessi totali di /report7) e le unità prodotto da product_units_daily.
     """
+    import calendar
+
     from src.db.supabase_client import SupabaseStore
     from src.dashboard.monthly import (
         filter_visible_months,
         group_by_month,
-        klaviyo_campaigns_by_month,
         monthly_store_cvr,
         monthly_visitors,
         units_by_month,
     )
-    from src.report import aggregate_period
+    from src.report import aggregate_period, load_klaviyo_period
 
     store = SupabaseStore()
     today = periods.rome_today()
@@ -161,10 +162,21 @@ def _compute_monthly() -> dict | None:
         return None
 
     months: list[dict] = []
+    klaviyo_by_month: dict[str, list[dict]] = {}
     for month, rows, partial in filter_visible_months(group_by_month(all_rows), today):
         (m, meta_daily, _mc, _tk, google_daily,
-         klaviyo_daily, _kc, _be, _h) = aggregate_period(rows, store)
+         _kd, _kc, _be, _h) = aggregate_period(rows, store)
         visitors, est = monthly_visitors(rows)
+
+        # Klaviyo di PERIODO: UNA query a finestra piena sul mese (non somma di snapshot
+        # giornalieri, che sottostima). Combacia con la dashboard Klaviyo per quel range.
+        y, mo = (int(x) for x in month.split("-"))
+        m_start = f"{month}-01"
+        last_dom = calendar.monthrange(y, mo)[1]
+        m_end = min(f"{month}-{last_dom:02d}", today_iso)   # mese corrente -> fino a oggi
+        kla_daily, kla_camps = load_klaviyo_period(m_start, m_end)
+        klaviyo_by_month[month] = kla_camps or []
+
         months.append({
             "month": month, "partial": partial,
             "revenue": m.revenue, "orders": m.num_orders, "aov": m.aov,
@@ -173,17 +185,16 @@ def _compute_monthly() -> dict | None:
             "visitors": visitors, "visitors_est": est,
             "meta_roas": float((meta_daily or {}).get("roas") or 0.0),
             "google_roas": float((google_daily or {}).get("roas") or 0.0),
-            "klaviyo_revenue": float((klaviyo_daily or {}).get("revenue") or 0.0),
+            "klaviyo_revenue": float((kla_daily or {}).get("revenue") or 0.0),
             "net_profit_operativo": m.net_profit_operativo,
             "net_profit_netto": m.net_profit_netto,
         })
 
     units_rows = store.get_table_range("product_units_daily", "2000-01-01", today_iso)
-    kla_camp_rows = store.get_table_range("klaviyo_campaigns", "2000-01-01", today_iso)
     return {
         "months": months,
         "units_by_month": units_by_month(units_rows),
-        "klaviyo_by_month": klaviyo_campaigns_by_month(kla_camp_rows),
+        "klaviyo_by_month": klaviyo_by_month,   # da query a finestra piena (per campagna)
     }
 
 
@@ -433,28 +444,28 @@ def _render_product_units_monthly(units_by_month: dict) -> None:
 
 
 def _render_klaviyo_breakdown(klaviyo_by_month: dict) -> None:
-    """#4: breakdown per-campagna della revenue Klaviyo per mese (verifica manuale)."""
+    """Breakdown per-campagna della revenue Klaviyo per mese (query a finestra piena)."""
     from src.dashboard.monthly import month_label
 
-    if not klaviyo_by_month:
+    if not klaviyo_by_month or not any(klaviyo_by_month.values()):
         return
     st.subheader("Klaviyo campaign revenue — per-campaign breakdown")
     st.caption(
-        "Monthly Klaviyo revenue = Σ of daily klaviyo_campaigns.revenue (queried per-day, "
-        "stamped by report day). 'days' = how many days each campaign appears — if a "
-        "campaign repeats across many days with the same revenue, Klaviyo's attribution "
-        "window is spreading it (possible double-count)."
+        "Monthly Klaviyo revenue = ONE campaign-values-report query over the full month "
+        "(full attribution window), each campaign counted once — matches the Klaviyo "
+        "dashboard for that range."
     )
     for month in sorted(klaviyo_by_month, reverse=True):
         camps = klaviyo_by_month[month]
-        total = sum(c["revenue"] for c in camps)
+        if not camps:
+            continue
+        total = sum(float(c.get("revenue") or 0) for c in camps)
+        camps = sorted(camps, key=lambda c: float(c.get("revenue") or 0), reverse=True)
         with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(camps)} campaigns"):
             df = pd.DataFrame([{
-                "Campaign": c["campaign_name"],
-                "Revenue": round(c["revenue"], 2),
-                "Days": c["days"],
-                "First": c["first_day"],
-                "Last": c["last_day"],
+                "Campaign": c.get("campaign_name", "(no name)"),
+                "Revenue": round(float(c.get("revenue") or 0), 2),
+                "Conversions": int(c.get("conversions") or 0),
             } for c in camps])
             st.dataframe(df, hide_index=True, use_container_width=True)
 

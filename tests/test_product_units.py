@@ -18,8 +18,14 @@ def test_product_bucket_families_keep_key_others_use_title():
     assert product_bucket("cable-bracelet", "Cable Bracelet") == "Cable Bracelet"
     assert product_bucket("faith-black-onyx-pearls", "FAITH Black Onyx Pearls") \
         == "FAITH Black Onyx Pearls"
-    # titolo mancante -> resta 'other'
+    # classic/stone rings -> TITOLO reale (ogni pietra una riga), non 'classic_stone_ring'
+    assert product_bucket("carnelian-signet-ring", "Carnelian Signet Ring") \
+        == "Carnelian Signet Ring"
+    assert product_bucket("black-onyx-signet-ring", "Black Onyx Signet Ring") \
+        == "Black Onyx Signet Ring"
+    # titolo mancante -> resta la chiave di fallback
     assert product_bucket("weird-handle", None) == "other"
+    assert product_bucket("carnelian-signet-ring", None) == "classic_stone_ring"
 
 
 def test_units_by_key_breaks_out_bracelets_by_title_no_other_bucket():
