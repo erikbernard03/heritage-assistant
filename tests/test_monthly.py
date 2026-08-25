@@ -6,10 +6,19 @@ from src.dashboard.monthly import (
     daily_breakeven_series,
     group_by_month,
     monthly_visitors,
+    month_label,
     month_of,
     period_store_cvr,
     units_by_month,
 )
+
+
+def test_month_label_human_readable():
+    assert month_label("2026-07") == "July '26"
+    assert month_label("2026-08") == "August '26"
+    assert month_label("2025-12") == "December '25"
+    # input malformato -> fallback alla chiave
+    assert month_label("nope") == "nope"
 
 
 def _drow(day, orders, revenue, *, cvr=0.0, sessions=None, cogs=0.0):

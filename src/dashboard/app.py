@@ -331,13 +331,15 @@ def _render_breakeven_trends(be_series: list[dict]) -> None:
 
 
 def _render_monthly(monthly: dict) -> None:
+    from src.dashboard.monthly import month_label
+
     months = monthly["months"]
     if not months:
         st.info("No monthly data yet.")
         return
     st.subheader("Monthly overview")
     df = pd.DataFrame([{
-        "Month": r["month"],
+        "Month": month_label(r["month"]),
         "Revenue": round(r["revenue"], 2),
         "Orders": r["orders"],
         "AOV": round(r["aov"], 2),
@@ -353,7 +355,7 @@ def _render_monthly(monthly: dict) -> None:
     st.dataframe(df, hide_index=True, use_container_width=True)
 
     bars = pd.DataFrame([{
-        "month": r["month"],
+        "month": month_label(r["month"]),
         "Revenue": round(r["revenue"], 2),
         "Net profit (op)": round(r["net_profit_operativo"], 2),
     } for r in months]).set_index("month")
@@ -362,32 +364,38 @@ def _render_monthly(monthly: dict) -> None:
 
 
 def _render_product_units_monthly(units_by_month: dict) -> None:
+    from src.dashboard.monthly import month_label
     from src.metrics.product_units import PRODUCT_KEYS, PRODUCT_KEY_LABELS
 
     st.subheader("Units sold per product / month")
     if not units_by_month:
         st.caption("No product-unit data yet — run /backfill to fill history.")
         return
-    keys = [k for k, _ in PRODUCT_KEYS]
+
     months = list(units_by_month.keys())
+    # Solo le famiglie con almeno 1 unità (righe leggibili su mobile).
+    keys = [k for k, _ in PRODUCT_KEYS
+            if any(units_by_month[mn].get(k, 0) for mn in months)]
 
+    # TABELLA: prodotti come RIGHE, un COLONNA per mese + colonna Total.
     table_rows = []
-    for month in months:
-        um = units_by_month[month]
-        row = {"Month": month, "Total": sum(um.values())}
-        for k in keys:
-            row[PRODUCT_KEY_LABELS[k]] = um.get(k, 0)
+    for k in keys:
+        row = {"Product": PRODUCT_KEY_LABELS[k]}
+        total = 0
+        for mn in months:
+            u = int(units_by_month[mn].get(k, 0))
+            row[month_label(mn)] = u
+            total += u
+        row["Total"] = total
         table_rows.append(row)
-    st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+    # Riga dei totali per mese in fondo.
+    totals = {"Product": "Total"}
+    for mn in months:
+        totals[month_label(mn)] = int(sum(units_by_month[mn].get(k, 0) for k in keys))
+    totals["Total"] = int(sum(totals[month_label(mn)] for mn in months))
+    table_rows.append(totals)
 
-    # Barre IMPILATE: una colonna per famiglia prodotto (colonne tutte-zero rimosse).
-    stacked = pd.DataFrame(
-        {PRODUCT_KEY_LABELS[k]: [units_by_month[mn].get(k, 0) for mn in months] for k in keys},
-        index=months,
-    )
-    stacked = stacked.loc[:, (stacked.sum(axis=0) > 0)]
-    st.caption("Units per product (stacked)")
-    st.bar_chart(stacked, height=300)
+    st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
 
 
 # --------------------------------------------------------------------------- #

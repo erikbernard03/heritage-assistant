@@ -16,6 +16,21 @@ def month_of(day_iso: str) -> str:
     return str(day_iso)[:7]
 
 
+_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def month_label(month_key: str) -> str:
+    """Etichetta leggibile di un mese 'YYYY-MM' -> es. "July '26". Fallback: la chiave."""
+    try:
+        y, m = month_key.split("-")
+        return f"{_MONTH_NAMES[int(m) - 1]} '{y[-2:]}"
+    except (ValueError, IndexError):
+        return month_key
+
+
 def group_by_month(daily_rows: list[dict]) -> dict[str, list[dict]]:
     """Raggruppa le righe daily_metrics per mese di calendario (YYYY-MM), ordinate per giorno."""
     by: dict[str, list[dict]] = {}

@@ -1164,10 +1164,11 @@ def aggregate_week(
     m.cogs_total = s("cogs_total")
     m.shipping_total = s("shipping_total")
     m.payment_fees = s("payment_fees")
-    m.ads_spend = s("ads_spend")
     m.fixed_cost_daily = s("fixed_cost_daily")    # somma delle quote giornaliere = quota × giorni
-    m.net_profit_operativo = s("net_profit_operativo")
-    m.net_profit_netto = s("net_profit_netto")
+    # NB: ads_spend e net_profit NON si sommano dalle righe daily_metrics: quel campo è 0
+    # per i giorni riscritti da /backfill (solo-Shopify), che però NON tocca le tabelle
+    # ad (meta/google/tiktok). Ricalcoliamo il net profit dai componenti sommati + la
+    # spesa ads REALE aggregata dalle tabelle piattaforma (vedi sotto, dopo l'aggregazione).
     m.aov = (m.revenue / m.num_orders) if m.num_orders else 0.0
     # Store CVR di PERIODO = conversioni totali / sessioni totali (NON somma né media
     # dei tassi giornalieri). Le sessioni non sono salvate: le ricostruiamo per giorno
@@ -1195,6 +1196,20 @@ def aggregate_week(
     klaviyo_campaigns = _agg_campaigns(
         klaviyo_camp_rows, day_set, ("revenue", "opens", "clicks", "conversions")
     )
+
+    # Spesa ads REALE del periodo dalle tabelle piattaforma (Meta + TikTok + Google),
+    # robusta ai giorni backfillati (dove daily_metrics.ads_spend era 0). Net profit
+    # ricalcolato dai componenti: così dashboard e /reportmonth combaciano ESATTAMENTE
+    # e il margine mensile non è più gonfiato.
+    m.ads_spend = (
+        _f((meta_daily or {}).get("spend"))
+        + _f((tiktok_daily or {}).get("spend"))
+        + _f((google_daily or {}).get("spend"))
+    )
+    m.net_profit_operativo = (
+        m.revenue - m.cogs_total - m.shipping_total - m.payment_fees - m.ads_spend
+    )
+    m.net_profit_netto = m.net_profit_operativo - m.fixed_cost_daily
 
     header = header or f"📊 *{len(rows)}-day report — {start} → {end}* _(USD)_"
     return (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,

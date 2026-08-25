@@ -6,6 +6,7 @@ from datetime import date
 
 from src.metrics.profit import DailyMetrics
 from src.report import (
+    aggregate_period,
     aggregate_week,
     build_last_month_report,
     build_month_report,
@@ -64,8 +65,14 @@ def test_aggregate_week_totals_and_per_platform():
     assert m.revenue == 2000.0
     assert round(m.aov, 2) == 100.0                     # 2000/20
     assert round(m.cogs_total, 2) == 200.0
-    assert round(m.net_profit_operativo, 2) == 1110.0
+    # ads_spend RICALCOLATO dalle tabelle piattaforma (Meta spend 200), NON dal campo
+    # stitato daily_metrics.ads_spend (che qui somma 400): robusto ai giorni backfillati.
+    assert round(m.ads_spend, 2) == 200.0
+    # net profit RICALCOLATO: 2000 − 200(cogs) − 140(ship) − 150(fee) − 200(ads) = 1310
+    assert round(m.net_profit_operativo, 2) == 1310.0
     assert round(m.fixed_cost_daily, 2) == 766.59       # 255.53 × 3 giorni
+    # netto = 1310 − 766.59 = 543.41
+    assert round(m.net_profit_netto, 2) == 543.41
     # CVR periodo = Σorders/Σsessions: 10/0.02 + 5/0.04 = 625 sess, 15 conv -> 0.024
     assert round(m.store_cvr, 4) == 0.024
     assert header.startswith("📊 *3-day report — 2026-06-14 → 2026-06-17*")  # 3 giorni reali
@@ -259,6 +266,55 @@ def test_aggregate_period_matches_report7_totals():
     assert round(m.store_cvr * 100, 2) == 3.75
     assert "Store CVR: 3.75%" in text
     assert "Revenue: *$1,000.00*" in text
+
+
+def test_monthly_net_profit_equals_reportmonth_and_subtracts_ad_spend():
+    """
+    Il net profit MENSILE della dashboard deve combaciare ESATTAMENTE con /reportmonth
+    (stessa aggregate_period) e sottrarre SEMPRE la spesa ads dalle tabelle piattaforma —
+    anche per i giorni riscritti da /backfill dove daily_metrics.ads_spend è 0 (ma le
+    tabelle meta/google/tiktok mantengono la spesa reale). Prima del fix il margine
+    mensile era gonfiato perché sommava il net_profit stitato (ads=0) di quei giorni.
+    """
+    # 2 giorni di GIUGNO "backfillati": ads_spend=0 e net_profit_operativo GONFIATO
+    # (senza ads) nelle righe daily_metrics; ma meta_daily/google_daily hanno la spesa.
+    daily = [
+        {"day": "2026-06-01", "num_orders": 10, "revenue": 1000.0, "cogs_total": 100.0,
+         "shipping_total": 70.0, "payment_fees": 75.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 203.90, "net_profit_operativo": 755.0,   # gonfiato (no ads)
+         "net_profit_netto": 551.10, "store_cvr": 0.02},
+        {"day": "2026-06-02", "num_orders": 10, "revenue": 1000.0, "cogs_total": 100.0,
+         "shipping_total": 70.0, "payment_fees": 75.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 203.90, "net_profit_operativo": 755.0,
+         "net_profit_netto": 551.10, "store_cvr": 0.03},
+    ]
+    meta = [{"day": "2026-06-01", "spend": 200.0, "revenue": 600.0, "orders": 4},
+            {"day": "2026-06-02", "spend": 150.0, "revenue": 500.0, "orders": 3}]
+    google = [{"day": "2026-06-01", "spend": 50.0, "revenue": 120.0, "orders": 1}]
+
+    class _FakeStore:
+        def get_daily_metrics_range(self, start, end):
+            return [r for r in daily if start <= r["day"] <= end]
+
+        def get_table_range(self, table, start, end):
+            rows = {"meta_daily": meta, "google_daily": google}.get(table, [])
+            return [r for r in rows if start <= r["day"] <= end]
+
+    store = _FakeStore()
+
+    # /reportmonth (Telegram) e dashboard usano ENTRAMBI aggregate_period -> stessi numeri.
+    m = aggregate_period(daily, store)[0]
+    tg_text = build_month_report(store=store, today=date(2026, 6, 15))
+
+    # ad spend REALE del mese = Meta (200+150) + Google (50) = 400 (NON lo 0 stitato)
+    assert round(m.ads_spend, 2) == 400.0
+    # net operating = 2000 − 200 − 140 − 150 − 400 = 1110 (NON 1510 = somma gonfiata)
+    assert round(m.net_profit_operativo, 2) == 1110.0
+    # netto = 1110 − (203.90 × 2) = 702.20 ; margine netto = 35.1% (plausibile, non ~60%)
+    assert round(m.net_profit_netto, 2) == 702.20
+    assert round(m.net_profit_netto / m.revenue * 100, 1) == 35.1
+    # il testo Telegram mostra lo STESSO net profit operativo ricalcolato
+    assert "operating *$1,110.00*" in tg_text
 
 
 def test_reportmonth_no_data_message():
