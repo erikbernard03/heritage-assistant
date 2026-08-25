@@ -124,6 +124,40 @@ def test_build_weekly_report_with_fake_store_renders_layout():
     assert "📊 Margin — operating 75.5% · net 24.4%" in text
 
 
+def test_period_cvr_uses_real_sessions_when_present():
+    """
+    Con store_sessions popolato (backfill), la CVR di periodo = Σordini ÷ Σsessioni reali,
+    anche se store_cvr è 0/assente (che il backfill non imposta). Prima -> "n/a"/0.
+    """
+    daily = [
+        {"day": "2026-08-01", "num_orders": 10, "revenue": 1000.0, "store_sessions": 2000,
+         "store_cvr": 0.0, "cogs_total": 0.0, "shipping_total": 0.0, "payment_fees": 0.0,
+         "ads_spend": 0.0, "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0,
+         "net_profit_netto": 0.0},
+        {"day": "2026-08-02", "num_orders": 20, "revenue": 2000.0, "store_sessions": 3000,
+         "store_cvr": 0.0, "cogs_total": 0.0, "shipping_total": 0.0, "payment_fees": 0.0,
+         "ads_spend": 0.0, "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0,
+         "net_profit_netto": 0.0},
+    ]
+    m = aggregate_week(daily, [], [], [], [], [], [])[0]
+    # 30 ordini / 5000 sessioni = 0.6% (NON 0/"n/a")
+    assert round(m.store_cvr * 100, 3) == 0.600
+
+
+def test_period_cvr_falls_back_to_store_cvr_without_sessions():
+    """Senza store_sessions, resta la ricostruzione da store_cvr (comportamento storico)."""
+    daily = [
+        {"day": "2026-06-10", "num_orders": 10, "revenue": 1000.0, "store_cvr": 0.02,
+         "cogs_total": 0.0, "shipping_total": 0.0, "payment_fees": 0.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0, "net_profit_netto": 0.0},
+        {"day": "2026-06-11", "num_orders": 10, "revenue": 1000.0, "store_cvr": 0.04,
+         "cogs_total": 0.0, "shipping_total": 0.0, "payment_fees": 0.0, "ads_spend": 0.0,
+         "fixed_cost_daily": 0.0, "net_profit_operativo": 0.0, "net_profit_netto": 0.0},
+    ]
+    m = aggregate_week(daily, [], [], [], [], [], [])[0]
+    assert round(m.store_cvr, 6) == round(20 / 750, 6)   # 10/0.02 + 10/0.04 = 750 sess
+
+
 def test_period_cvr_totals_based_not_summed():
     """5 giorni @ ~0.45% CVR -> periodo ~0.45%, NON ~2.25% (somma)."""
     daily = [
