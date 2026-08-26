@@ -136,6 +136,37 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
     }
 
 
+@st.cache_data(ttl=300, show_spinner="Pulling today live…")
+def _compute_today_live() -> dict | None:
+    """
+    OGGI in tempo reale: stesso percorso LIVE di /today (report._gather_day) — ordini Shopify
+    finora, Meta bucketizzato orario→Roma (solo ore di oggi), Triple Whale (todayHour), Klaviyo
+    giornaliero. NON persiste. Break-even dai numeri di OGGI (own day). Cache 5 minuti per non
+    martellare le API. Attribuzione ads provvisoria (si assesta nelle ore successive).
+    """
+    from src.report import _gather_day, _own_day_breakeven, day_window
+
+    today = periods.rome_today()
+    g = _gather_day(day_window(today), persist=False)
+    m = g.metrics
+    be_roas, be_cpa = _own_day_breakeven(m)
+    return {
+        "metrics": {
+            "num_orders": m.num_orders, "revenue": m.revenue, "aov": m.aov,
+            "cogs_total": m.cogs_total, "shipping_total": m.shipping_total,
+            "payment_fees": m.payment_fees, "ads_spend": m.ads_spend,
+            "fixed_cost_daily": m.fixed_cost_daily,
+            "net_profit_operativo": m.net_profit_operativo,
+            "net_profit_netto": m.net_profit_netto, "store_cvr": m.store_cvr,
+        },
+        "meta_daily": g.meta_daily, "tiktok_daily": g.tiktok_daily,
+        "google_daily": g.google_daily, "klaviyo_daily": g.klaviyo_daily,
+        "meta_campaigns": g.meta_campaigns,
+        "breakeven": {"roas": be_roas, "cpa": be_cpa},
+        "num_days": 1,
+    }
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def _compute_monthly() -> dict | None:
     """
@@ -786,9 +817,15 @@ def _render_goals(months: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 def _render_period_tab() -> None:
     label, start_iso, end_iso = _select_period()
-    st.caption(f"**{label}** · {start_iso} → {end_iso} · USD · read-only (nightly data)")
+    # "Today" -> pull LIVE (come /today): il DB ha i dati solo dopo il cron notturno.
+    is_today_live = (label == "Today")
+    if is_today_live:
+        st.caption(f"**Today (live, provisional attribution)** · {start_iso} · USD · "
+                   "live pull, cached 5 min · ad revenue/ROAS settle later")
+    else:
+        st.caption(f"**{label}** · {start_iso} → {end_iso} · USD · read-only (nightly data)")
     try:
-        data = _compute_period(start_iso, end_iso)
+        data = _compute_today_live() if is_today_live else _compute_period(start_iso, end_iso)
     except Exception as exc:  # noqa: BLE001
         st.error(f"Could not load data: {exc}")
         return
