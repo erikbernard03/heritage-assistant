@@ -259,6 +259,34 @@ def month_unit_economics(revenue: float, cogs: float, orders: int) -> dict:
             "aov": aov, "cogs_per_order": cogs_per_order}
 
 
+_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def weekday_net_profit(month_rows: list[dict]) -> list[dict]:
+    """
+    NET profit MEDIO per giorno della settimana (lun→dom; il weekday si ricava dalla data
+    ISO, che è già Europe/Rome) del mese. Media (non somma) perché un mese non ha lo stesso
+    numero di ciascun giorno. Ritorna [{weekday, name, avg, count}] per i 7 giorni
+    (avg=None se nessun dato per quel weekday).
+    """
+    from datetime import date
+
+    sums = [0.0] * 7
+    counts = [0] * 7
+    for r in month_rows:
+        try:
+            wd = date.fromisoformat(str(r["day"])).weekday()   # 0=lun ... 6=dom
+        except (KeyError, ValueError):
+            continue
+        sums[wd] += _f(r.get("net_profit_netto"))
+        counts[wd] += 1
+    return [
+        {"weekday": i, "name": _WEEKDAY_NAMES[i],
+         "avg": (sums[i] / counts[i]) if counts[i] else None, "count": counts[i]}
+        for i in range(7)
+    ]
+
+
 def fixed_alloc_for_month(day_strs: list[str]) -> float:
     """Somma della quota costi fissi DATATA sui giorni con dati del mese (mid-month safe)."""
     from src.metrics.fixed_costs import daily_fixed_allocation

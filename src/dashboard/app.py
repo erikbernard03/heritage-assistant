@@ -182,6 +182,7 @@ def _compute_monthly() -> dict | None:
         monthly_store_cvr,
         monthly_visitors,
         units_by_month,
+        weekday_net_profit,
     )
     from src.report import aggregate_period
 
@@ -213,6 +214,7 @@ def _compute_monthly() -> dict | None:
             "is_current": month == current_month,
             "klaviyo_start": m_start, "klaviyo_end": m_end,
             "day_strs": sorted(r2["day"] for r2 in rows),   # per la quota costi fissi datata
+            "weekday_profit": weekday_net_profit(rows),      # net profit medio per weekday
             "revenue": m.revenue, "orders": m.num_orders, "aov": m.aov,
             # CVR mensile = ordini ÷ sessioni reali (None -> "n/a", non 0.00%)
             "store_cvr": monthly_store_cvr(rows),
@@ -236,17 +238,20 @@ def _compute_monthly() -> dict | None:
         meta_campaigns_by_month,
     )
     from src.metrics.sales_location import sales_by_country_by_month
+    from src.metrics.sales_timing import sales_by_hour_by_month
 
     units_rows = store.get_table_range("product_units_daily", "2000-01-01", today_iso)
     meta_camp_rows = store.get_table_range("meta_campaigns", "2000-01-01", today_iso)
     google_rows = store.get_table_range("google_daily", "2000-01-01", today_iso)
     country_rows = store.get_table_range("sales_by_country_daily", "2000-01-01", today_iso)
+    hour_rows = store.get_table_range("sales_by_hour_daily", "2000-01-01", today_iso)
     return {
         "months": months,
         "units_by_month": units_by_month(units_rows),
         "meta_campaigns_by_month": meta_campaigns_by_month(meta_camp_rows),
         "google_by_month": google_by_month(google_rows),
         "sales_by_country_by_month": sales_by_country_by_month(country_rows),
+        "sales_by_hour_by_month": sales_by_hour_by_month(hour_rows),
     }
 
 
@@ -777,6 +782,93 @@ def _render_sales_by_location(sales_by_month: dict) -> None:
             st.dataframe(df, hide_index=True, use_container_width=True)
 
 
+def _render_weekday_profit(months: list[dict]) -> None:
+    """Best/worst weekday: net profit MEDIO per giorno della settimana, per mese."""
+    import altair as alt
+
+    from src.dashboard.monthly import month_label
+
+    if not months:
+        return
+    st.subheader("📅 Best vs worst weekday (avg net profit)")
+    st.caption("Average net profit per weekday (months don't have equal counts of each day). "
+               "Best day green, worst red.")
+    for r in sorted(months, key=lambda x: x["month"], reverse=True):
+        wp = [d for d in (r.get("weekday_profit") or []) if d.get("avg") is not None]
+        if not wp:
+            continue
+        best = max(wp, key=lambda d: d["avg"])
+        worst = min(wp, key=lambda d: d["avg"])
+        order = [d["name"] for d in sorted(wp, key=lambda d: d["weekday"])]
+        df = pd.DataFrame([{
+            "Day": d["name"],
+            "Avg net profit": round(d["avg"], 2),
+            "Days counted": d["count"],
+            "hl": ("best" if d["weekday"] == best["weekday"]
+                   else "worst" if d["weekday"] == worst["weekday"] else "mid"),
+        } for d in sorted(wp, key=lambda d: d["weekday"])])
+        title = f"{month_label(r['month'])} — best {best['name']} / worst {worst['name']}"
+        with st.expander(title):
+            base = alt.Chart(df).encode(
+                x=alt.X("Day:N", sort=order, title=None, axis=alt.Axis(labelAngle=0)))
+            bars = base.mark_bar().encode(
+                y=alt.Y("Avg net profit:Q", title="USD"),
+                color=alt.Color("hl:N", scale=alt.Scale(
+                    domain=["best", "mid", "worst"],
+                    range=["#1f7a4d", "#9aa0a6", "#c0392b"]), legend=None),
+                tooltip=["Day", alt.Tooltip("Avg net profit:Q", format="$,.0f"),
+                         "Days counted"],
+            )
+            labels = base.mark_text(dy=-4, fontSize=10, color="#333").encode(
+                y=alt.Y("Avg net profit:Q"),
+                text=alt.Text("Avg net profit:Q", format="$,.0f"))
+            st.altair_chart((bars + labels).properties(height=260),
+                            use_container_width=True)
+
+
+def _render_sales_by_hour(sales_hour_by_month: dict) -> None:
+    """Best/worst hour: revenue (e ordini) per ORA del giorno (Europe/Rome), per mese."""
+    import altair as alt
+
+    from src.dashboard.monthly import month_label
+
+    st.subheader("🕒 Best vs worst hour (sales by hour)")
+    if not sales_hour_by_month:
+        st.caption("No hourly data yet — run /backfill after applying migration 011.")
+        return
+    st.caption("Revenue by hour of day (Europe/Rome, from order timestamps). "
+               "Best hour green, worst red; order counts in the table.")
+    for month in sorted(sales_hour_by_month, reverse=True):
+        by_hour = sales_hour_by_month[month]
+        present = {h: by_hour.get(h, {"revenue": 0.0, "orders": 0}) for h in range(24)}
+        rev_hours = {h: v["revenue"] for h, v in present.items() if v["orders"] > 0}
+        if not rev_hours:
+            continue
+        best = max(rev_hours, key=rev_hours.get)
+        worst = min(rev_hours, key=rev_hours.get)
+        total = sum(v["revenue"] for v in present.values())
+        df = pd.DataFrame([{
+            "Hour": f"{h:02d}", "Revenue": round(present[h]["revenue"], 2),
+            "Orders": present[h]["orders"],
+            "hl": ("best" if h == best else "worst" if h == worst else "mid"),
+        } for h in range(24)])
+        title = f"{month_label(month)} — ${total:,.2f} · best {best:02d}:00 / worst {worst:02d}:00"
+        with st.expander(title):
+            chart = alt.Chart(df).mark_bar().encode(
+                x=alt.X("Hour:N", sort=[f"{h:02d}" for h in range(24)],
+                        title="Hour (Rome)", axis=alt.Axis(labelAngle=0, labelOverlap=True)),
+                y=alt.Y("Revenue:Q", title="USD"),
+                color=alt.Color("hl:N", scale=alt.Scale(
+                    domain=["best", "mid", "worst"],
+                    range=["#1f7a4d", "#9aa0a6", "#c0392b"]), legend=None),
+                tooltip=["Hour", alt.Tooltip("Revenue:Q", format="$,.0f"), "Orders"],
+            )
+            st.altair_chart(chart.properties(height=260), use_container_width=True)
+            top = (df[df["Orders"] > 0].sort_values("Revenue", ascending=False)
+                   [["Hour", "Revenue", "Orders"]])
+            st.dataframe(top, hide_index=True, use_container_width=True)
+
+
 def _render_goals(months: list[dict]) -> None:
     """#11: obiettivi mensili (statici) + avanzamento del mese corrente vs obiettivo."""
     from src.dashboard.monthly import MONTHLY_GOALS, goal_progress, month_label
@@ -906,6 +998,8 @@ def _render_monthly_tab() -> None:
     _render_unit_economics(months)                                       # 8
     _render_cost_breakdown_monthly(months)                               # 9
     _render_sales_by_location(monthly.get("sales_by_country_by_month") or {})   # 10
+    _render_weekday_profit(months)                                        # best/worst weekday
+    _render_sales_by_hour(monthly.get("sales_by_hour_by_month") or {})    # best/worst hour
     _render_goals(months)                                                # 11
 
 

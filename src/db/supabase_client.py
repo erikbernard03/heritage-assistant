@@ -135,6 +135,23 @@ class SupabaseStore:
         self.client.table("sales_by_country_daily").insert(rows).execute()
         return len(rows)
 
+    def upsert_sales_by_hour(self, day: str, by_hour: dict[int, dict]) -> int:
+        """
+        Riscrive le vendite per ORA del giorno `day` (DELETE-then-INSERT). by_hour:
+        {ora(0–23): {revenue, orders}}.
+        """
+        self.client.table("sales_by_hour_daily").delete().eq("day", day).execute()
+        rows = [
+            {"day": day, "hour": int(h), "revenue": round(float(v.get("revenue") or 0), 2),
+             "orders": int(v.get("orders") or 0)}
+            for h, v in (by_hour or {}).items()
+            if int(v.get("orders") or 0) != 0
+        ]
+        if not rows:
+            return 0
+        self.client.table("sales_by_hour_daily").insert(rows).execute()
+        return len(rows)
+
     # ----------------------------------------------------- letture (read-only)
     def get_recent_daily_metrics(self, days: int = 14) -> list[dict]:
         """Ultime N righe di daily_metrics (più recenti prima)."""
@@ -188,7 +205,7 @@ class SupabaseStore:
     _RANGE_TABLES = {
         "daily_metrics", "meta_daily", "meta_campaigns", "tiktok_daily",
         "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
-        "product_units_daily", "sales_by_country_daily",
+        "product_units_daily", "sales_by_country_daily", "sales_by_hour_daily",
     }
 
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:
