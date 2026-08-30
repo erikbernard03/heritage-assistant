@@ -832,40 +832,41 @@ def _render_sales_by_hour(sales_hour_by_month: dict) -> None:
 
     from src.dashboard.monthly import month_label
 
-    st.subheader("🕒 Best vs worst hour (sales by hour)")
+    st.subheader("🕒 Best vs worst hour (by order count)")
     if not sales_hour_by_month:
         st.caption("No hourly data yet — run /backfill after applying migration 011.")
         return
-    st.caption("Revenue by hour of day (Europe/Rome, from order timestamps). "
-               "Best hour green, worst red; order counts in the table.")
+    st.caption("Orders by hour of day (Europe/Rome, from order timestamps). Best/worst = most/"
+               "fewest orders in that hour across the month; revenue in the tooltip.")
     for month in sorted(sales_hour_by_month, reverse=True):
         by_hour = sales_hour_by_month[month]
         present = {h: by_hour.get(h, {"revenue": 0.0, "orders": 0}) for h in range(24)}
-        rev_hours = {h: v["revenue"] for h, v in present.items() if v["orders"] > 0}
-        if not rev_hours:
+        ord_hours = {h: v["orders"] for h, v in present.items() if v["orders"] > 0}
+        if not ord_hours:
             continue
-        best = max(rev_hours, key=rev_hours.get)
-        worst = min(rev_hours, key=rev_hours.get)
-        total = sum(v["revenue"] for v in present.values())
+        best = max(ord_hours, key=ord_hours.get)    # più ordini
+        worst = min(ord_hours, key=ord_hours.get)   # meno ordini (tra le ore con vendite)
+        total_orders = sum(v["orders"] for v in present.values())
         df = pd.DataFrame([{
-            "Hour": f"{h:02d}", "Revenue": round(present[h]["revenue"], 2),
-            "Orders": present[h]["orders"],
+            "Hour": f"{h:02d}", "Orders": present[h]["orders"],
+            "Revenue": round(present[h]["revenue"], 2),
             "hl": ("best" if h == best else "worst" if h == worst else "mid"),
         } for h in range(24)])
-        title = f"{month_label(month)} — ${total:,.2f} · best {best:02d}:00 / worst {worst:02d}:00"
+        title = (f"{month_label(month)} — {total_orders:,} orders · "
+                 f"best {best:02d}:00 / worst {worst:02d}:00")
         with st.expander(title):
             chart = alt.Chart(df).mark_bar().encode(
                 x=alt.X("Hour:N", sort=[f"{h:02d}" for h in range(24)],
                         title="Hour (Rome)", axis=alt.Axis(labelAngle=0, labelOverlap=True)),
-                y=alt.Y("Revenue:Q", title="USD"),
+                y=alt.Y("Orders:Q", title="Orders"),
                 color=alt.Color("hl:N", scale=alt.Scale(
                     domain=["best", "mid", "worst"],
                     range=["#1f7a4d", "#9aa0a6", "#c0392b"]), legend=None),
-                tooltip=["Hour", alt.Tooltip("Revenue:Q", format="$,.0f"), "Orders"],
+                tooltip=["Hour", "Orders", alt.Tooltip("Revenue:Q", format="$,.0f")],
             )
             st.altair_chart(chart.properties(height=260), use_container_width=True)
-            top = (df[df["Orders"] > 0].sort_values("Revenue", ascending=False)
-                   [["Hour", "Revenue", "Orders"]])
+            top = (df[df["Orders"] > 0].sort_values("Orders", ascending=False)
+                   [["Hour", "Orders", "Revenue"]])
             st.dataframe(top, hide_index=True, use_container_width=True)
 
 
