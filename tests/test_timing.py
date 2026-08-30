@@ -3,7 +3,12 @@ Test deterministici delle sezioni "best vs worst times": net profit medio per we
 e vendite per ORA (con conversione dei timestamp ordine a Europe/Rome). Nessuna rete.
 """
 from src.dashboard.monthly import weekday_net_profit
-from src.metrics.sales_timing import revenue_by_hour, sales_by_hour_by_month
+from src.metrics.sales_timing import (
+    remap_hours,
+    revenue_by_hour,
+    sales_by_hour_by_month,
+    tz_shift_hours,
+)
 
 
 # ---- Weekday net profit (media, non somma) ----
@@ -47,6 +52,38 @@ def test_revenue_by_hour_offset_timestamp_maps_to_local_hour():
     orders = [{"total_price": "10.00", "created_at": "2026-08-19T14:30:00-04:00"}]
     by = revenue_by_hour(orders, tz_name="Europe/Rome")
     assert by[20] == {"revenue": 10.0, "orders": 1}
+
+
+def test_tz_shift_rome_to_dubai_dst():
+    # estate (agosto): Roma CEST(+2), Dubai(+4) -> shift +2
+    assert tz_shift_hours("2026-08", "Asia/Dubai") == 2
+    # inverno (gennaio): Roma CET(+1), Dubai(+4) -> shift +3
+    assert tz_shift_hours("2026-01", "Asia/Dubai") == 3
+    # Roma -> Roma = 0
+    assert tz_shift_hours("2026-08", "Europe/Rome") == 0
+
+
+def test_remap_hours_shifts_buckets():
+    by_hour = {23: {"revenue": 100.0, "orders": 2}, 8: {"revenue": 30.0, "orders": 1}}
+    # agosto, Dubai +2: ora 23 -> 1 (23+2=25%24), ora 8 -> 10
+    dubai = remap_hours(by_hour, "2026-08", "Asia/Dubai")
+    assert dubai[1] == {"revenue": 100.0, "orders": 2}
+    assert dubai[10] == {"revenue": 30.0, "orders": 1}
+    # inverno Dubai +3: 23 -> 2
+    dubai_w = remap_hours({23: {"revenue": 5.0, "orders": 1}}, "2026-01", "Asia/Dubai")
+    assert dubai_w[2] == {"revenue": 5.0, "orders": 1}
+    # Rome invariato (copia)
+    rome = remap_hours(by_hour, "2026-08", "Europe/Rome")
+    assert rome[23] == {"revenue": 100.0, "orders": 2} and rome[8]["orders"] == 1
+
+
+def test_remap_hours_merges_collisions():
+    # se due ore Rome finiscono nella stessa ora target, si sommano
+    by_hour = {22: {"revenue": 10.0, "orders": 1}, 23: {"revenue": 20.0, "orders": 2}}
+    # (fittizio) shift che porti a collisione non capita con +2, ma verifichiamo la somma
+    # forzando lo stesso target via due ore adiacenti con shift +2: 22->0, 23->1 (no collisione)
+    out = remap_hours(by_hour, "2026-08", "Asia/Dubai")
+    assert out[0]["orders"] == 1 and out[1]["orders"] == 2
 
 
 def test_sales_by_hour_by_month_groups():

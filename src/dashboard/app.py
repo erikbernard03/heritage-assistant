@@ -832,14 +832,21 @@ def _render_sales_by_hour(sales_hour_by_month: dict) -> None:
 
     from src.dashboard.monthly import month_label
 
+    from src.metrics.sales_timing import remap_hours
+
     st.subheader("🕒 Best vs worst hour (by order count)")
     if not sales_hour_by_month:
         st.caption("No hourly data yet — run /backfill after applying migration 011.")
         return
-    st.caption("Orders by hour of day (Europe/Rome, from order timestamps). Best/worst = most/"
-               "fewest orders in that hour across the month; revenue in the tooltip.")
+    # Toggle fuso SOLO per la visualizzazione (i dati restano salvati in Europe/Rome).
+    # La scelta è persistita in session_state (key) e vale per TUTTI i mesi insieme.
+    tz_label = st.radio("Timezone", ["Rome", "Dubai"], horizontal=True, key="hour_tz")
+    tz_name = {"Rome": "Europe/Rome", "Dubai": "Asia/Dubai"}[tz_label]
+    st.caption(f"Orders by hour of day (**{tz_label}**, remapped from stored Rome buckets). "
+               "Best/worst = most/fewest orders in that hour across the month; revenue in "
+               "the tooltip.")
     for month in sorted(sales_hour_by_month, reverse=True):
-        by_hour = sales_hour_by_month[month]
+        by_hour = remap_hours(sales_hour_by_month[month], month, tz_name)
         present = {h: by_hour.get(h, {"revenue": 0.0, "orders": 0}) for h in range(24)}
         ord_hours = {h: v["orders"] for h, v in present.items() if v["orders"] > 0}
         if not ord_hours:
@@ -857,7 +864,8 @@ def _render_sales_by_hour(sales_hour_by_month: dict) -> None:
         with st.expander(title):
             chart = alt.Chart(df).mark_bar().encode(
                 x=alt.X("Hour:N", sort=[f"{h:02d}" for h in range(24)],
-                        title="Hour (Rome)", axis=alt.Axis(labelAngle=0, labelOverlap=True)),
+                        title=f"Hour ({tz_label})",
+                        axis=alt.Axis(labelAngle=0, labelOverlap=True)),
                 y=alt.Y("Orders:Q", title="Orders"),
                 color=alt.Color("hl:N", scale=alt.Scale(
                     domain=["best", "mid", "worst"],

@@ -53,6 +53,42 @@ def revenue_by_hour(orders: list[dict], tz_name: str | None = None) -> dict[int,
     return out
 
 
+def tz_shift_hours(month_key: str, target_tz_name: str,
+                   base_tz_name: str | None = None) -> int:
+    """
+    Differenza di offset (target − base) in ORE INTERE per il mese `month_key` ('YYYY-MM'),
+    valutata a metà mese (gestisce l'ora legale). Es. Roma→Dubai: +2 d'estate, +3 d'inverno.
+    """
+    base_tz_name = base_tz_name or settings.TIMEZONE
+    y, mo = int(str(month_key)[:4]), int(str(month_key)[5:7])
+    naive = datetime(y, mo, 15, 12, 0)
+    base_off = pytz.timezone(base_tz_name).localize(naive).utcoffset()
+    tgt_off = pytz.timezone(target_tz_name).localize(naive).utcoffset()
+    return int(round((tgt_off - base_off).total_seconds() / 3600))
+
+
+def remap_hours(by_hour: dict[int, dict], month_key: str, target_tz_name: str,
+                base_tz_name: str | None = None) -> dict[int, dict]:
+    """
+    Ri-mappa (SOLO per la visualizzazione) i bucket orari salvati nel fuso BASE (Europe/Rome)
+    verso `target_tz_name`, spostando ogni ora dell'offset del mese (rotazione di N ore).
+    Non cambia i dati salvati. Per i mesi con cambio DST usa l'offset di metà mese.
+    """
+    shift = tz_shift_hours(month_key, target_tz_name, base_tz_name)
+    if shift == 0:
+        return {h: dict(v) for h, v in by_hour.items()}
+    out: dict[int, dict] = {}
+    for h in range(24):
+        v = by_hour.get(h)
+        if not v:
+            continue
+        nh = (h + shift) % 24
+        acc = out.setdefault(nh, {"revenue": 0.0, "orders": 0})
+        acc["revenue"] += _to_float(v.get("revenue"))
+        acc["orders"] += int(v.get("orders") or 0)
+    return out
+
+
 def sales_by_hour_by_month(rows: list[dict]) -> dict[str, dict[int, dict]]:
     """
     Aggrega le righe sales_by_hour_daily per mese: {mese: {ora: {revenue, orders}}}.
