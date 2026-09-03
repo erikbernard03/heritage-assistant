@@ -1261,12 +1261,17 @@ def aggregate_week(
     def s(key):
         return sum(_f(r.get(key)) for r in rows)
 
+    from src.metrics.fixed_costs import daily_fixed_allocation
+
     m.num_orders = int(s("num_orders"))
     m.revenue = s("revenue")
     m.cogs_total = s("cogs_total")
     m.shipping_total = s("shipping_total")
     m.payment_fees = s("payment_fees")
-    m.fixed_cost_daily = s("fixed_cost_daily")    # somma delle quote giornaliere = quota × giorni
+    # Quota costi fissi del periodo = Σ quota GIORNALIERA DATATA (valore in vigore a ogni
+    # giorno), NON la somma dei valori stitati (che potrebbero essere stale se non
+    # ri-backfillati). Così net profit e riga "Fixed allocation" del cost breakdown coincidono.
+    m.fixed_cost_daily = sum(daily_fixed_allocation(r["day"]) for r in rows)
     # NB: ads_spend e net_profit NON si sommano dalle righe daily_metrics: quel campo è 0
     # per i giorni riscritti da /backfill (solo-Shopify), che però NON tocca le tabelle
     # ad (meta/google/tiktok). Ricalcoliamo il net profit dai componenti sommati + la

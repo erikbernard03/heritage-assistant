@@ -70,9 +70,10 @@ def test_aggregate_week_totals_and_per_platform():
     assert round(m.ads_spend, 2) == 200.0
     # net profit RICALCOLATO: 2000 − 200(cogs) − 140(ship) − 150(fee) − 200(ads) = 1310
     assert round(m.net_profit_operativo, 2) == 1310.0
-    assert round(m.fixed_cost_daily, 2) == 766.59       # 255.53 × 3 giorni
-    # netto = 1310 − 766.59 = 543.41
-    assert round(m.net_profit_netto, 2) == 543.41
+    # fixed DATATO: 06-14/16/17 sono >= 2026-06-11 -> 7666/30 × 3 = 766.60
+    assert round(m.fixed_cost_daily, 2) == round(3 * 7666 / 30, 2)   # 766.60
+    # netto = 1310 − 766.60 = 543.40
+    assert round(m.net_profit_netto, 2) == round(1310.0 - 3 * 7666 / 30, 2)
     # CVR periodo = Σorders/Σsessions: 10/0.02 + 5/0.04 = 625 sess, 15 conv -> 0.024
     assert round(m.store_cvr, 4) == 0.024
     assert header.startswith("📊 *3-day report — 2026-06-14 → 2026-06-17*")  # 3 giorni reali
@@ -253,8 +254,9 @@ def test_reportmonth_window_first_of_month_to_last_data_day():
     assert "*2) COST BREAKDOWN*" in text
     assert "Revenue: *$4,000.00*" in text          # 1000 × 4 giorni
     assert "Orders: *40*" in text
-    # costi fissi allocati = 255.53 × 4 giorni = 1022.12
-    assert "$1,022.12" in text
+    # costi fissi DATATI: 06-01/02/04 (5668/30) + 06-23 (7666/30) = 3×188.93 + 255.53 = 822.33
+    _fx = round(3 * 5668 / 30 + 7666 / 30, 2)
+    assert f"−${_fx:,.2f}" in text
 
 
 def test_aggregate_period_matches_report7_totals():
@@ -344,11 +346,16 @@ def test_monthly_net_profit_equals_reportmonth_and_subtracts_ad_spend():
     assert round(m.ads_spend, 2) == 400.0
     # net operating = 2000 − 200 − 140 − 150 − 400 = 1110 (NON 1510 = somma gonfiata)
     assert round(m.net_profit_operativo, 2) == 1110.0
-    # netto = 1110 − (203.90 × 2) = 702.20 ; margine netto = 35.1% (plausibile, non ~60%)
-    assert round(m.net_profit_netto, 2) == 702.20
-    assert round(m.net_profit_netto / m.revenue * 100, 1) == 35.1
+    # fixed DATATO: 06-01 e 06-02 sono PRIMA del 2026-06-11 -> 5668/30 × 2 = 377.87
+    assert round(m.fixed_cost_daily, 2) == round(2 * 5668 / 30, 2)
+    # netto = 1110 − 377.87 = 732.13 ; margine netto ~36.6% (plausibile, non ~60%)
+    net = round(1110.0 - 2 * 5668 / 30, 2)
+    assert round(m.net_profit_netto, 2) == net
+    assert round(m.net_profit_netto / m.revenue * 100, 1) == round(net / 2000 * 100, 1)
     # il testo Telegram mostra lo STESSO net profit operativo ricalcolato
     assert "operating *$1,110.00*" in tg_text
+    # e lo STESSO net (dashboard == /reportmonth)
+    assert f"net *${net:,.2f}*" in tg_text
 
 
 def test_reportmonth_no_data_message():
@@ -396,8 +403,9 @@ def test_reportlastmonth_full_previous_calendar_month():
     assert "*2) COST BREAKDOWN*" in text
     assert "Revenue: *$3,000.00*" in text          # 1000 × 3 giorni
     assert "Orders: *30*" in text
-    # costi fissi allocati = 203.90 × 3 giorni con dati = 611.70
-    assert "$611.70" in text
+    # costi fissi DATATI: 07-01/10/20 (tutti >= 2026-06-11) = 7666/30 × 3 = 766.60
+    _fx = round(3 * 7666 / 30, 2)
+    assert f"−${_fx:,.2f}" in text
 
 
 def test_reportlastmonth_january_crosses_year_boundary():

@@ -489,7 +489,9 @@ def _render_monthly(months: list[dict], kla: dict) -> None:
     df = pd.DataFrame([{
         "Month": _mlabel(r),
         "Revenue": round(r["revenue"], 2),
-        "Net profit": round(r["net_profit_operativo"], 2),
+        # Net profit e margine dallo STESSO numero (net_profit_netto): coerenti nella riga
+        # e uguali a /reportlastmonth.
+        "Net profit": round(r["net_profit_netto"], 2),
         "Net margin %": (round(r["net_profit_netto"] / r["revenue"] * 100, 1)
                          if r["revenue"] else None),
         "Orders": r["orders"],
@@ -526,7 +528,7 @@ def _render_monthly_trend(months: list[dict]) -> None:
         rows.append({"Month": lbl, "Metric": "Revenue",
                      "Value": round(float(r.get("revenue") or 0), 2)})
         rows.append({"Month": lbl, "Metric": "Net profit",
-                     "Value": round(float(r.get("net_profit_operativo") or 0), 2)})
+                     "Value": round(float(r.get("net_profit_netto") or 0), 2)})
     df = pd.DataFrame(rows)
     palette = alt.Scale(domain=["Revenue", "Net profit"], range=["#1f7a4d", "#8c9196"])
     base = alt.Chart(df).encode(
