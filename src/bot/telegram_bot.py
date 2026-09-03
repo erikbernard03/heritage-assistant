@@ -311,8 +311,8 @@ async def cmd_shopify_check(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await msg.edit_text(f"❌ Shopify diagnostic error: {exc}")
 
 
-async def cmd_stripe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/stripe (admin) -> riepilogo Stripe: ieri (gross/fee/net), fee rate vs 7.5%, payout, dispute."""
+async def cmd_stripe_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/stripe_check (admin) -> riepilogo Stripe: ieri (gross/fee/net), costo pagamento reale, payout, dispute."""
     if not _authorized(update):
         await update.message.reply_text("⛔️ Unauthorized chat.")
         return
@@ -524,7 +524,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("backfill", "Re-pull Shopify for a date range"),
     ("pl", "Monthly P&L (year month)"),
     ("shopify_check", "Shopify scopes + orders/sessions probe"),
-    ("stripe", "Stripe — fees, payouts, disputes, reconciliation"),
+    ("stripe_check", "Stripe — fees, payouts, disputes, reconciliation"),
     ("backfill_stripe", "Backfill Stripe for a date range"),
     ("meta_check", "Meta diagnostic"),
     ("google_check", "Google diagnostic"),
@@ -565,7 +565,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("tw_check", cmd_tw_check))
     app.add_handler(CommandHandler("google_check", cmd_google_check))
     app.add_handler(CommandHandler("shopify_check", cmd_shopify_check))
-    app.add_handler(CommandHandler("stripe", cmd_stripe))
+    app.add_handler(CommandHandler("stripe_check", cmd_stripe_check))
     app.add_handler(CommandHandler("backfill_stripe", cmd_backfill_stripe))
     app.add_handler(CommandHandler("refresh_today", cmd_refresh_today))
     app.add_handler(CommandHandler("backfill", cmd_backfill))

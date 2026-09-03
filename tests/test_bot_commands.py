@@ -22,7 +22,7 @@ EXPECTED = [
     ("backfill", "Re-pull Shopify for a date range"),
     ("pl", "Monthly P&L (year month)"),
     ("shopify_check", "Shopify scopes + orders/sessions probe"),
-    ("stripe", "Stripe — fees, payouts, disputes, reconciliation"),
+    ("stripe_check", "Stripe — fees, payouts, disputes, reconciliation"),
     ("backfill_stripe", "Backfill Stripe for a date range"),
     ("meta_check", "Meta diagnostic"),
     ("google_check", "Google diagnostic"),
