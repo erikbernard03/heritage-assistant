@@ -759,6 +759,72 @@ def _persist_sales_by_hour(store, day: str, orders: list[dict]) -> None:
         print(f"[report] ⚠️ sales_by_hour non salvate per {day}: {exc}")
 
 
+def _persist_refunds(store, day: str, orders: list[dict]) -> None:
+    """Salva i refund Shopify del giorno (visibilità; best-effort)."""
+    try:
+        from src.metrics.stripe_metrics import refunds_from_orders
+
+        agg = refunds_from_orders(orders)
+        store.upsert_refunds_daily(day, agg.get(day, {"amount": 0.0, "count": 0}))
+    except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
+        print(f"[report] ⚠️ refunds non salvati per {day}: {exc}")
+
+
+def _persist_stripe(store, day: str) -> None:
+    """
+    Pull Stripe del giorno (SOLA LETTURA, best-effort): stripe_daily[day] dalle balance
+    transactions + refresh payout (ultimi 35g) e dispute (ultimi 120g). No-op se non configurato.
+    """
+    if not settings.STRIPE_API_KEY:
+        return
+    try:
+        from src.connectors.stripe_conn import StripeConnector
+        from src.metrics.stripe_metrics import daily_from_balance_transactions
+
+        d = date.fromisoformat(day)
+        sc = StripeConnector()
+        agg = daily_from_balance_transactions(sc.balance_transactions(d, d))
+        store.upsert_stripe_daily(day, agg.get(day, {}))
+        store.upsert_stripe_payouts(sc.payouts(d - timedelta(days=35), d + timedelta(days=7)))
+        store.upsert_stripe_disputes(sc.disputes(d - timedelta(days=120), d))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] ⚠️ Stripe sync saltato per {day}: {exc}")
+
+
+def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, store=None) -> dict:
+    """
+    Riempie stripe_daily per OGNI giorno in [start, end] (una pull balance-transactions per
+    giorno) + payout/dispute dell'intero range (una volta). Ritorna un riepilogo.
+    """
+    from src.connectors.stripe_conn import StripeConnector
+    from src.db.supabase_client import SupabaseStore
+    from src.metrics.stripe_metrics import daily_from_balance_transactions
+
+    if not settings.STRIPE_API_KEY:
+        raise RuntimeError("STRIPE_API_KEY non configurata.")
+    d0 = date.fromisoformat(start_iso)
+    d1 = date.fromisoformat(end_iso)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days + 1 > max_days:
+        raise ValueError(f"Range troppo ampio (> {max_days} giorni).")
+
+    sc = StripeConnector()
+    store = store or SupabaseStore()
+    # Una sola pull balance-transactions per l'intero range, poi bucketing per giorno.
+    by_day = daily_from_balance_transactions(sc.balance_transactions(d0, d1))
+    days = 0
+    cur = d0
+    while cur <= d1:
+        store.upsert_stripe_daily(cur.isoformat(), by_day.get(cur.isoformat(), {}))
+        days += 1
+        cur += timedelta(days=1)
+    n_pay = store.upsert_stripe_payouts(sc.payouts(d0 - timedelta(days=7), d1 + timedelta(days=14)))
+    n_dis = store.upsert_stripe_disputes(sc.disputes(d0, d1 + timedelta(days=1)))
+    return {"days": days, "payouts": n_pay, "disputes": n_dis,
+            "range": f"{d0.isoformat()} → {d1.isoformat()}"}
+
+
 def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics) -> None:
     """Salva su Supabase se configurato; non blocca il report in caso di assenza DB."""
     try:
@@ -771,6 +837,8 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         _persist_product_units(store, metrics)
         _persist_sales_by_country(store, metrics.day, orders)
         _persist_sales_by_hour(store, metrics.day, orders)
+        _persist_refunds(store, metrics.day, orders)         # refund Shopify (Fase 8)
+        _persist_stripe(store, metrics.day)                  # Stripe daily + payout/dispute (Fase 8)
         print(
             f"[report] daily_metrics PERSISTED day={metrics.day} "
             f"orders={metrics.num_orders} revenue=${metrics.revenue:,.2f}"
@@ -845,6 +913,7 @@ def backfill_daily_metrics(
             _persist_product_units(store, m)   # unità vendute per prodotto (Fase 5)
             _persist_sales_by_country(store, w.day_str, orders)   # vendite per paese (Fase 6)
             _persist_sales_by_hour(store, w.day_str, orders)      # vendite per ora (Fase 7)
+            _persist_refunds(store, w.day_str, orders)            # refund Shopify (Fase 8)
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
                 (w.day_str, m.num_orders, round(m.revenue, 2),

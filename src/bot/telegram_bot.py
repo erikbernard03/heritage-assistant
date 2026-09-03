@@ -311,6 +311,48 @@ async def cmd_shopify_check(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await msg.edit_text(f"❌ Shopify diagnostic error: {exc}")
 
 
+async def cmd_stripe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/stripe (admin) -> riepilogo Stripe: ieri (gross/fee/net), fee rate vs 7.5%, payout, dispute."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    msg = await update.message.reply_text("⏳ Running Stripe diagnostic…")
+    try:
+        from src.diagnostics import stripe_diagnostic
+
+        text = await asyncio.to_thread(stripe_diagnostic)
+        await msg.edit_text(text[:3800])
+        if len(text) > 3800:
+            await _send_chunks(update.message, text[3800:])
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nella diagnostica Stripe")
+        await msg.edit_text(f"❌ Stripe diagnostic error: {exc}")
+
+
+async def cmd_backfill_stripe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/backfill_stripe START END (admin) -> riempie stripe_daily + payout/dispute nel range."""
+    if not _authorized(update):
+        await update.message.reply_text("⛔️ Unauthorized chat.")
+        return
+    args = context.args or []
+    start = args[0] if len(args) >= 1 else None
+    end = args[1] if len(args) >= 2 else start
+    if not start:
+        await update.message.reply_text("Usage: /backfill_stripe YYYY-MM-DD [YYYY-MM-DD]")
+        return
+    msg = await update.message.reply_text(f"⏳ Backfilling Stripe {start} → {end}…")
+    try:
+        from src.report import backfill_stripe_range
+
+        r = await asyncio.to_thread(backfill_stripe_range, start, end)
+        await msg.edit_text(
+            f"✅ Stripe backfill {r['range']}: {r['days']} days · "
+            f"{r['payouts']} payouts · {r['disputes']} disputes.")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Errore nel backfill Stripe")
+        await msg.edit_text(f"❌ Stripe backfill error: {exc}")
+
+
 async def cmd_refresh_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/refresh_today (admin) -> force re-pull di tutte le piattaforme (oggi + ieri),
     sovrascrive le righe DB e reinvia il report aggiornato di ieri."""
@@ -482,6 +524,8 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("backfill", "Re-pull Shopify for a date range"),
     ("pl", "Monthly P&L (year month)"),
     ("shopify_check", "Shopify scopes + orders/sessions probe"),
+    ("stripe", "Stripe — fees, payouts, disputes, reconciliation"),
+    ("backfill_stripe", "Backfill Stripe for a date range"),
     ("meta_check", "Meta diagnostic"),
     ("google_check", "Google diagnostic"),
     ("tw_check", "Triple Whale diagnostic"),
@@ -521,6 +565,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("tw_check", cmd_tw_check))
     app.add_handler(CommandHandler("google_check", cmd_google_check))
     app.add_handler(CommandHandler("shopify_check", cmd_shopify_check))
+    app.add_handler(CommandHandler("stripe", cmd_stripe))
+    app.add_handler(CommandHandler("backfill_stripe", cmd_backfill_stripe))
     app.add_handler(CommandHandler("refresh_today", cmd_refresh_today))
     app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("refresh_meta", cmd_refresh_meta))

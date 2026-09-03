@@ -410,6 +410,86 @@ _SHOPIFY_NEEDED_SCOPES = [
 ]
 
 
+def stripe_diagnostic() -> str:
+    """
+    Diagnostica LIVE Stripe (sola lettura): ieri (gross/fee/net/refund) + fee rate vs 7.5%,
+    payout recenti e dispute aperte con scadenza evidenze. La API key non è MAI esposta.
+    """
+    out: list[str] = ["💳 Stripe diagnostic (read-only)"]
+    out.append(f"Key: {_mask(settings.STRIPE_API_KEY)}")
+    if not settings.STRIPE_API_KEY:
+        out.append("\n❌ STRIPE_API_KEY not set in this environment.")
+        return "\n".join(out)
+
+    from datetime import timedelta
+
+    from src.connectors.stripe_conn import StripeConnector
+    from src.metrics.stripe_metrics import (
+        daily_from_balance_transactions,
+        dispute_rate,
+        fee_rate,
+    )
+
+    try:
+        sc = StripeConnector()
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"\n❌ connector init failed: {exc}")
+        return "\n".join(out)
+
+    tz = pytz.timezone(settings.TIMEZONE)
+    today = datetime.now(tz).date()
+    yday = today - timedelta(days=1)
+
+    out.append(f"\n— Yesterday {yday.isoformat()} —")
+    try:
+        agg = daily_from_balance_transactions(sc.balance_transactions(yday, yday)).get(
+            yday.isoformat(), {})
+        gross = float(agg.get("gross") or 0)
+        fee = float(agg.get("fee") or 0)
+        net = float(agg.get("net") or 0)
+        fr = fee_rate(gross, fee)
+        out.append(f"  Gross ${gross:,.2f} · Fee ${fee:,.2f} · Net ${net:,.2f}")
+        out.append(f"  Charges {int(agg.get('charge_count') or 0)} · "
+                   f"Refunds {int(agg.get('refund_count') or 0)} (${float(agg.get('refund_amount') or 0):,.2f})")
+        if fr is not None:
+            flag = "≈ matches" if abs(fr - 0.075) < 0.01 else "⚠️ differs from"
+            out.append(f"  Real fee rate {fr*100:.2f}% — {flag} the 7.5% estimate")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"  ❌ balance-transactions call failed: {exc}")
+
+    out.append("\n— Recent payouts (last 35 days) —")
+    try:
+        pays = sc.payouts(today - timedelta(days=35), today + timedelta(days=7))
+        for p in sorted(pays, key=lambda x: x.get("arrival_date") or "", reverse=True)[:5]:
+            out.append(f"  {p.get('arrival_date')}: ${float(p.get('amount') or 0):,.2f} "
+                       f"· {p.get('status')}")
+        if not pays:
+            out.append("  (none)")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"  ❌ payouts call failed: {exc}")
+
+    out.append("\n— Disputes (last 120 days) —")
+    try:
+        disp = sc.disputes(today - timedelta(days=120), today)
+        charges_90 = daily_from_balance_transactions(
+            sc.balance_transactions(today - timedelta(days=90), today))
+        n_charges = sum(int(v.get("charge_count") or 0) for v in charges_90.values())
+        dr = dispute_rate(len(disp), n_charges)
+        open_d = [d for d in disp if str(d.get("status")) in
+                  ("needs_response", "warning_needs_response", "under_review")]
+        for d in open_d[:6]:
+            out.append(f"  {d.get('id')}: ${float(d.get('amount') or 0):,.2f} · {d.get('status')} "
+                       f"· {d.get('reason')} · evidence due {d.get('evidence_due') or 'n/a'}")
+        out.append(f"  Open: {len(open_d)} / total {len(disp)}")
+        if dr is not None:
+            flag = " ⚠️ approaching 1%!" if dr >= 0.008 else ""
+            out.append(f"  Dispute rate (90d): {dr*100:.3f}% ({len(disp)}/{n_charges}){flag}")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"  ❌ disputes call failed: {exc}")
+
+    return _scrub("\n".join(out), settings.STRIPE_API_KEY)
+
+
 def shopify_diagnostic() -> str:
     """
     Diagnostica LIVE Shopify (sola lettura): mostra gli scope EFFETTIVAMENTE concessi al

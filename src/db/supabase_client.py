@@ -135,6 +135,63 @@ class SupabaseStore:
         self.client.table("sales_by_country_daily").insert(rows).execute()
         return len(rows)
 
+    # ----------------------------------------------------- Stripe (Fase 8)
+    def upsert_stripe_daily(self, day: str, agg: dict) -> None:
+        """Upsert dell'aggregato Stripe del giorno (chiave = day)."""
+        self.client.table("stripe_daily").upsert({
+            "day": day,
+            "gross_amount": round(float(agg.get("gross") or 0), 2),
+            "fee_amount": round(float(agg.get("fee") or 0), 2),
+            "net_amount": round(float(agg.get("net") or 0), 2),
+            "charge_count": int(agg.get("charge_count") or 0),
+            "refund_amount": round(float(agg.get("refund_amount") or 0), 2),
+            "refund_count": int(agg.get("refund_count") or 0),
+        }).execute()
+
+    def upsert_stripe_payouts(self, payouts: list[dict]) -> int:
+        """Upsert dei payout (chiave = id)."""
+        rows = [{
+            "id": p["id"], "arrival_date": p.get("arrival_date"),
+            "amount": round(float(p.get("amount") or 0), 2),
+            "status": p.get("status"), "created": p.get("created"),
+        } for p in (payouts or []) if p.get("id")]
+        if not rows:
+            return 0
+        self.client.table("stripe_payouts").upsert(rows).execute()
+        return len(rows)
+
+    def upsert_stripe_disputes(self, disputes: list[dict]) -> int:
+        """Upsert delle dispute (chiave = id)."""
+        rows = [{
+            "id": d["id"], "amount": round(float(d.get("amount") or 0), 2),
+            "status": d.get("status"), "reason": d.get("reason"),
+            "created": d.get("created"), "evidence_due": d.get("evidence_due"),
+        } for d in (disputes or []) if d.get("id")]
+        if not rows:
+            return 0
+        self.client.table("stripe_disputes").upsert(rows).execute()
+        return len(rows)
+
+    def get_stripe_payouts(self, limit: int = 400) -> list[dict]:
+        """Tutti i payout (più recenti per arrival_date)."""
+        res = (self.client.table("stripe_payouts").select("*")
+               .order("arrival_date", desc=True).limit(limit).execute())
+        return res.data or []
+
+    def get_stripe_disputes(self, limit: int = 400) -> list[dict]:
+        """Tutte le dispute (più recenti per created)."""
+        res = (self.client.table("stripe_disputes").select("*")
+               .order("created", desc=True).limit(limit).execute())
+        return res.data or []
+
+    def upsert_refunds_daily(self, day: str, agg: dict) -> None:
+        """Upsert dei refund Shopify del giorno (chiave = day)."""
+        self.client.table("refunds_daily").upsert({
+            "day": day,
+            "refund_amount": round(float((agg or {}).get("amount") or 0), 2),
+            "refund_count": int((agg or {}).get("count") or 0),
+        }).execute()
+
     def upsert_sales_by_hour(self, day: str, by_hour: dict[int, dict]) -> int:
         """
         Riscrive le vendite per ORA del giorno `day` (DELETE-then-INSERT). by_hour:
@@ -206,6 +263,7 @@ class SupabaseStore:
         "daily_metrics", "meta_daily", "meta_campaigns", "tiktok_daily",
         "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
         "product_units_daily", "sales_by_country_daily", "sales_by_hour_daily",
+        "stripe_daily", "refunds_daily",
     }
 
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:

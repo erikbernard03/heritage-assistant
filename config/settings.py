@@ -53,6 +53,10 @@ TRIPLEWHALE_SUMMARY_PATH = os.getenv("TRIPLEWHALE_SUMMARY_PATH", "/summary-page/
 # Opzionale: dominio/ID dello shop, se l'endpoint Summary lo richiede.
 TRIPLEWHALE_SHOP_ID = os.getenv("TRIPLEWHALE_SHOP_ID", "")
 
+# ---- Stripe (Fase 8, SOLA LETTURA: riconciliazione, fee reali, payout, dispute) ----
+# API key RISTRETTA read-only (rk_live_...): Charges/Balance transactions/Payouts/Disputes = Read.
+STRIPE_API_KEY = os.getenv("STRIPE_API_KEY", "")
+
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
 # ---- Dashboard web (Streamlit, SOLA LETTURA) ----

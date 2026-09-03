@@ -12,3 +12,5 @@ anthropic==0.105.2
 # Dashboard web (terzo servizio Railway, SOLA LETTURA). pandas arriva con streamlit.
 streamlit==1.40.2
 pandas==2.2.3
+# Stripe (SOLA LETTURA): riconciliazione, fee reali, payout, dispute.
+stripe==11.4.0

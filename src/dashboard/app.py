@@ -239,12 +239,24 @@ def _compute_monthly() -> dict | None:
     )
     from src.metrics.sales_location import sales_by_country_by_month
     from src.metrics.sales_timing import sales_by_hour_by_month
+    from src.metrics.stripe_metrics import (
+        payouts_monthly,
+        refunds_monthly,
+        stripe_monthly,
+    )
 
     units_rows = store.get_table_range("product_units_daily", "2000-01-01", today_iso)
     meta_camp_rows = store.get_table_range("meta_campaigns", "2000-01-01", today_iso)
     google_rows = store.get_table_range("google_daily", "2000-01-01", today_iso)
     country_rows = store.get_table_range("sales_by_country_daily", "2000-01-01", today_iso)
     hour_rows = store.get_table_range("sales_by_hour_daily", "2000-01-01", today_iso)
+    stripe_rows = store.get_table_range("stripe_daily", "2000-01-01", today_iso)
+    refunds_rows = store.get_table_range("refunds_daily", "2000-01-01", today_iso)
+    try:
+        payout_rows = store.get_stripe_payouts()
+        dispute_rows = store.get_stripe_disputes()
+    except Exception:  # noqa: BLE001 — tabelle Stripe assenti finché non si esegue la migration
+        payout_rows, dispute_rows = [], []
     return {
         "months": months,
         "units_by_month": units_by_month(units_rows),
@@ -252,6 +264,10 @@ def _compute_monthly() -> dict | None:
         "google_by_month": google_by_month(google_rows),
         "sales_by_country_by_month": sales_by_country_by_month(country_rows),
         "sales_by_hour_by_month": sales_by_hour_by_month(hour_rows),
+        "stripe_by_month": stripe_monthly(stripe_rows),
+        "payouts_by_month": payouts_monthly(payout_rows),
+        "refunds_by_month": refunds_monthly(refunds_rows),
+        "disputes": dispute_rows,
     }
 
 
@@ -880,6 +896,118 @@ def _render_sales_by_hour(sales_hour_by_month: dict) -> None:
             st.dataframe(top, hide_index=True, use_container_width=True)
 
 
+def _render_stripe_money(monthly: dict) -> None:
+    """Sezione Stripe / Money: riconciliazione, fee reali vs 7.5%, refund, dispute."""
+    from src.dashboard.monthly import month_label
+    from src.metrics.stripe_metrics import dispute_rate, fee_rate, reconciliation_row
+
+    st.subheader("💳 Stripe / Money")
+    stripe_m = monthly.get("stripe_by_month") or {}
+    payouts_m = monthly.get("payouts_by_month") or {}
+    refunds_m = monthly.get("refunds_by_month") or {}
+    disputes = monthly.get("disputes") or []
+    months = monthly.get("months") or []
+    rev_by_month = {r["month"]: r["revenue"] for r in months}
+
+    if not stripe_m and not refunds_m and not disputes:
+        st.caption("No Stripe data yet — run migrations 012/013, add STRIPE_API_KEY, then "
+                   "/backfill_stripe and /backfill.")
+        return
+
+    # 1) Riconciliazione: Shopify revenue vs Stripe gross vs Stripe net vs payout.
+    st.markdown("**Reconciliation — Shopify vs Stripe vs payouts**")
+    rec_rows = []
+    for mn in sorted(set(rev_by_month) | set(stripe_m), reverse=True):
+        s = stripe_m.get(mn, {})
+        rc = reconciliation_row(rev_by_month.get(mn, 0.0), s.get("gross", 0.0),
+                                s.get("net", 0.0), payouts_m.get(mn, 0.0))
+        rec_rows.append({
+            "Month": month_label(mn),
+            "Shopify rev": round(rc["shopify_revenue"], 2),
+            "Stripe gross": round(rc["stripe_gross"], 2),
+            "Stripe net": round(rc["stripe_net"], 2),
+            "Payouts": round(rc["payouts"], 2),
+            "Gross−Rev": round(rc["diff"], 2),
+            "Diff %": (round(rc["diff_pct"], 1) if rc["diff_pct"] is not None else None),
+        })
+    st.dataframe(pd.DataFrame(rec_rows), hide_index=True, use_container_width=True)
+    st.caption("Stripe gross < Shopify revenue is expected (PayPal share doesn't flow through "
+               "Stripe). Payouts can differ from net by timing (money arrives days later).")
+
+    # 2) Fee rate reale vs 7.5%.
+    st.markdown("**Real fee rate vs 7.5% estimate**")
+    fee_rows = []
+    for mn in sorted(stripe_m, reverse=True):
+        s = stripe_m[mn]
+        fr = fee_rate(s.get("gross", 0.0), s.get("fee", 0.0))
+        fee_rows.append({
+            "Month": month_label(mn),
+            "Gross": round(s.get("gross", 0.0), 2),
+            "Fee": round(s.get("fee", 0.0), 2),
+            "Real fee %": (round(fr * 100, 2) if fr is not None else None),
+            "Estimate %": 7.5,
+            "Δ vs 7.5%": (round(fr * 100 - 7.5, 2) if fr is not None else None),
+        })
+    if fee_rows:
+        st.dataframe(pd.DataFrame(fee_rows), hide_index=True, use_container_width=True)
+
+    # 3) Refund mensili (da Shopify; % della revenue). Revenue già li netta -> solo visibilità.
+    st.markdown("**Refunds (Shopify, incl. PayPal) — visibility only**")
+    ref_rows = []
+    for mn in sorted(refunds_m, reverse=True):
+        rf = refunds_m[mn]
+        rev = rev_by_month.get(mn, 0.0)
+        ref_rows.append({
+            "Month": month_label(mn),
+            "Refunds": round(rf.get("amount", 0.0), 2),
+            "Count": int(rf.get("count", 0)),
+            "% of revenue": (round(rf["amount"] / rev * 100, 1) if rev else None),
+        })
+    if ref_rows:
+        st.dataframe(pd.DataFrame(ref_rows), hide_index=True, use_container_width=True)
+    else:
+        st.caption("No refund data yet — run /backfill after migration 013.")
+
+    # 4) Dispute: lista con stato + scadenza evidenze + tasso mensile (flag verso 1%).
+    st.markdown("**Disputes**")
+    if not disputes:
+        st.caption("No disputes 🎉")
+    else:
+        _badge = {"needs_response": "🔴", "warning_needs_response": "🟠",
+                  "under_review": "🟡", "won": "🟢", "lost": "⚫️", "charge_refunded": "⚪️"}
+        drows = []
+        for d in sorted(disputes, key=lambda x: x.get("created") or "", reverse=True):
+            drows.append({
+                "": _badge.get(str(d.get("status")), "•"),
+                "Created": d.get("created"),
+                "Amount": round(float(d.get("amount") or 0), 2),
+                "Status": d.get("status"),
+                "Reason": d.get("reason"),
+                "Evidence due": d.get("evidence_due") or "—",
+            })
+        st.dataframe(pd.DataFrame(drows), hide_index=True, use_container_width=True)
+        # tasso dispute mensile = dispute create nel mese / charge del mese
+        drate_rows = []
+        disp_by_month: dict[str, int] = {}
+        for d in disputes:
+            mkey = str(d.get("created") or "")[:7]
+            if mkey:
+                disp_by_month[mkey] = disp_by_month.get(mkey, 0) + 1
+        for mn in sorted(disp_by_month, reverse=True):
+            charges = int((stripe_m.get(mn, {}) or {}).get("charge_count", 0))
+            dr = dispute_rate(disp_by_month[mn], charges)
+            drate_rows.append({
+                "Month": month_label(mn),
+                "Disputes": disp_by_month[mn],
+                "Charges": charges,
+                "Rate %": (round(dr * 100, 3) if dr is not None else None),
+                "⚠️": ("APPROACHING 1%" if dr is not None and dr >= 0.008 else ""),
+            })
+        if drate_rows:
+            st.caption("Monthly dispute rate (disputes ÷ charges) — Stripe flags accounts above 1%.")
+            st.dataframe(pd.DataFrame(drate_rows), hide_index=True, use_container_width=True)
+
+
 def _render_goals(months: list[dict]) -> None:
     """#11: obiettivi mensili (statici) + avanzamento del mese corrente vs obiettivo."""
     from src.dashboard.monthly import MONTHLY_GOALS, goal_progress, month_label
@@ -1011,6 +1139,7 @@ def _render_monthly_tab() -> None:
     _render_sales_by_location(monthly.get("sales_by_country_by_month") or {})   # 10
     _render_weekday_profit(months)                                        # best/worst weekday
     _render_sales_by_hour(monthly.get("sales_by_hour_by_month") or {})    # best/worst hour
+    _render_stripe_money(monthly)                                         # Stripe / Money
     _render_goals(months)                                                # 11
 
 
