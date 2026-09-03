@@ -899,7 +899,11 @@ def _render_sales_by_hour(sales_hour_by_month: dict) -> None:
 def _render_stripe_money(monthly: dict) -> None:
     """Sezione Stripe / Money: riconciliazione, fee reali vs 7.5%, refund, dispute."""
     from src.dashboard.monthly import month_label
-    from src.metrics.stripe_metrics import dispute_rate, fee_rate, reconciliation_row
+    from src.metrics.stripe_metrics import (
+        dispute_rate,
+        reconciliation_row,
+        total_payment_cost_rate,
+    )
 
     st.subheader("💳 Stripe / Money")
     stripe_m = monthly.get("stripe_by_month") or {}
@@ -934,22 +938,36 @@ def _render_stripe_money(monthly: dict) -> None:
     st.caption("Stripe gross < Shopify revenue is expected (PayPal share doesn't flow through "
                "Stripe). Payouts can differ from net by timing (money arrives days later).")
 
-    # 2) Fee rate reale vs 7.5%.
-    st.markdown("**Real fee rate vs 7.5% estimate**")
+    # 2) Costo di pagamento REALE vs stima: fee Stripe + surcharge Shopify (invisibile a Stripe).
+    surcharge = settings.SHOPIFY_GATEWAY_SURCHARGE_PCT
+    est_pct = settings.FEE_PAGAMENTI * 100
+    st.markdown(f"**Real payment cost vs {est_pct:.1f}% assumption** — "
+                f"Stripe fee + Shopify gateway surcharge ({surcharge*100:.2f}%)")
     fee_rows = []
     for mn in sorted(stripe_m, reverse=True):
         s = stripe_m[mn]
-        fr = fee_rate(s.get("gross", 0.0), s.get("fee", 0.0))
+        rates = total_payment_cost_rate(s.get("gross", 0.0), s.get("fee", 0.0))
+        sr, tot = rates["stripe_rate"], rates["total_rate"]
         fee_rows.append({
             "Month": month_label(mn),
             "Gross": round(s.get("gross", 0.0), 2),
             "Fee": round(s.get("fee", 0.0), 2),
-            "Real fee %": (round(fr * 100, 2) if fr is not None else None),
-            "Estimate %": 7.5,
-            "Δ vs 7.5%": (round(fr * 100 - 7.5, 2) if fr is not None else None),
+            "Stripe %": (round(sr * 100, 2) if sr is not None else None),
+            "Shopify surcharge %": round(surcharge * 100, 2),
+            "Total %": (round(tot * 100, 2) if tot is not None else None),
+            "Assumption %": round(est_pct, 2),
+            # Il flag è sul TOTALE, non sulla sola fee Stripe.
+            f"Δ vs {est_pct:.1f}%": (round(tot * 100 - est_pct, 2) if tot is not None else None),
         })
     if fee_rows:
         st.dataframe(pd.DataFrame(fee_rows), hide_index=True, use_container_width=True)
+        if surcharge == 0:
+            st.caption("⚠️ SHOPIFY_GATEWAY_SURCHARGE_PCT is 0 — set it to your Shopify plan's "
+                       "gateway surcharge. Stripe's fee alone understates your true payment cost, "
+                       "so the comparison against the assumption is not yet meaningful.")
+        else:
+            st.caption("Total = real Stripe fee + Shopify gateway surcharge (billed by Shopify, "
+                       "invisible to Stripe). The mismatch flag is on the TOTAL, not Stripe alone.")
 
     # 3) Refund mensili (da Shopify; % della revenue). Revenue già li netta -> solo visibilità.
     st.markdown("**Refunds (Shopify, incl. PayPal) — visibility only**")

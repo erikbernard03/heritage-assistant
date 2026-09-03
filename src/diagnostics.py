@@ -427,7 +427,7 @@ def stripe_diagnostic() -> str:
     from src.metrics.stripe_metrics import (
         daily_from_balance_transactions,
         dispute_rate,
-        fee_rate,
+        total_payment_cost_rate,
     )
 
     try:
@@ -447,13 +447,21 @@ def stripe_diagnostic() -> str:
         gross = float(agg.get("gross") or 0)
         fee = float(agg.get("fee") or 0)
         net = float(agg.get("net") or 0)
-        fr = fee_rate(gross, fee)
+        rates = total_payment_cost_rate(gross, fee)
         out.append(f"  Gross ${gross:,.2f} · Fee ${fee:,.2f} · Net ${net:,.2f}")
         out.append(f"  Charges {int(agg.get('charge_count') or 0)} · "
                    f"Refunds {int(agg.get('refund_count') or 0)} (${float(agg.get('refund_amount') or 0):,.2f})")
-        if fr is not None:
-            flag = "≈ matches" if abs(fr - 0.075) < 0.01 else "⚠️ differs from"
-            out.append(f"  Real fee rate {fr*100:.2f}% — {flag} the 7.5% estimate")
+        est = settings.FEE_PAGAMENTI
+        if rates["total_rate"] is not None:
+            sr, su, tot = rates["stripe_rate"], rates["surcharge_rate"], rates["total_rate"]
+            # Il confronto è sul TOTALE (fee Stripe + surcharge Shopify), non sulla sola fee.
+            flag = "≈ matches" if abs(tot - est) < 0.01 else "⚠️ differs from"
+            out.append(
+                f"  Stripe fee {sr*100:.2f}% + Shopify surcharge {su*100:.2f}% "
+                f"= est. total {tot*100:.2f}% — {flag} the {est*100:.1f}% assumption")
+            if su == 0:
+                out.append("  ⚠️ SHOPIFY_GATEWAY_SURCHARGE_PCT not set — Shopify's gateway "
+                           "surcharge is invisible to Stripe; the fee above understates your true cost.")
     except Exception as exc:  # noqa: BLE001
         out.append(f"  ❌ balance-transactions call failed: {exc}")
 

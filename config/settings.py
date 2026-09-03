@@ -57,6 +57,14 @@ TRIPLEWHALE_SHOP_ID = os.getenv("TRIPLEWHALE_SHOP_ID", "")
 # API key RISTRETTA read-only (rk_live_...): Charges/Balance transactions/Payouts/Disputes = Read.
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY", "")
 
+# Surcharge di Shopify sul gateway: usando Stripe TRAMITE Shopify (non Shopify Payments),
+# Shopify addebita una commissione aggiuntiva sulla transazione, fatturata da Shopify e
+# INVISIBILE a Stripe. Si somma alla fee Stripe reale per ottenere il costo di pagamento
+# TOTALE, che è ciò che va confrontato con la stima FEE_PAGAMENTI (7.5%).
+# FRAZIONE (es. 0.02 = 2%). Da confermare dal proprio piano Shopify.
+# Override via env SHOPIFY_GATEWAY_SURCHARGE_PCT.
+SHOPIFY_GATEWAY_SURCHARGE_PCT = float(os.getenv("SHOPIFY_GATEWAY_SURCHARGE_PCT", "0.0"))
+
 TIMEZONE = os.getenv("TIMEZONE", "Europe/Rome")
 
 # ---- Dashboard web (Streamlit, SOLA LETTURA) ----

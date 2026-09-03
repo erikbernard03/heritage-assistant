@@ -103,6 +103,31 @@ def fee_rate(gross: float, fee: float) -> Optional[float]:
     return (_f(fee) / _f(gross)) if _f(gross) > 0 else None
 
 
+def total_payment_cost_rate(
+    gross: float, fee: float, surcharge_pct: Optional[float] = None
+) -> dict:
+    """
+    Costo di pagamento TOTALE stimato = fee Stripe reale + surcharge Shopify sul gateway
+    (fatturata da Shopify, invisibile a Stripe). Confrontarlo con FEE_PAGAMENTI (7.5%): la
+    sola fee Stripe SOTTOSTIMA il costo reale quando si usa Stripe tramite Shopify.
+
+    Ritorna {stripe_rate, surcharge_rate, total_rate} come FRAZIONI (es. 0.062).
+    `stripe_rate`/`total_rate` = None se gross 0. `surcharge_pct` è una frazione; se None
+    usa settings.SHOPIFY_GATEWAY_SURCHARGE_PCT.
+    """
+    sr = fee_rate(gross, fee)
+    surcharge = (
+        float(settings.SHOPIFY_GATEWAY_SURCHARGE_PCT)
+        if surcharge_pct is None
+        else float(surcharge_pct)
+    )
+    return {
+        "stripe_rate": sr,
+        "surcharge_rate": surcharge,
+        "total_rate": (sr + surcharge) if sr is not None else None,
+    }
+
+
 def dispute_rate(disputes_count: int, charges_count: int) -> Optional[float]:
     """Tasso dispute = dispute ÷ charge (frazione). None se 0 charge."""
     return (int(disputes_count) / int(charges_count)) if int(charges_count) > 0 else None

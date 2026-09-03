@@ -15,6 +15,7 @@ from src.metrics.stripe_metrics import (
     refunds_from_orders,
     refunds_monthly,
     stripe_monthly,
+    total_payment_cost_rate,
 )
 
 
@@ -51,6 +52,25 @@ def test_fee_rate_and_dispute_rate():
     assert fee_rate(0.0, 5.0) is None
     assert round(dispute_rate(3, 1000), 4) == 0.003
     assert dispute_rate(1, 0) is None
+
+
+def test_total_payment_cost_rate_stripe_plus_surcharge():
+    # Stripe fee reale 6.21% (gross 10000, fee 621) + surcharge Shopify 2% = totale 8.21%.
+    r = total_payment_cost_rate(10000.0, 621.0, surcharge_pct=0.02)
+    assert round(r["stripe_rate"], 4) == 0.0621
+    assert r["surcharge_rate"] == 0.02
+    assert round(r["total_rate"], 4) == 0.0821
+    # Confronto col 7.5%: la sola fee Stripe sembra sotto, ma il TOTALE lo supera.
+    assert r["stripe_rate"] < 0.075 < r["total_rate"]
+
+
+def test_total_payment_cost_rate_zero_gross_and_default_surcharge():
+    # gross 0 -> stripe/total None, ma surcharge sempre riportato.
+    r0 = total_payment_cost_rate(0.0, 5.0, surcharge_pct=0.02)
+    assert r0["stripe_rate"] is None and r0["total_rate"] is None and r0["surcharge_rate"] == 0.02
+    # surcharge None -> usa il default da settings (0.0 finché non configurato).
+    r1 = total_payment_cost_rate(1000.0, 62.0)
+    assert r1["surcharge_rate"] == 0.0 and round(r1["total_rate"], 4) == 0.062
 
 
 def test_reconciliation_row_diff():
