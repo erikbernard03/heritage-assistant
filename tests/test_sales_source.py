@@ -146,25 +146,52 @@ def test_sales_by_source_by_month():
 
 
 # ------------------------------------------------------------- Triple Whale pixel
-def test_extract_pixel_attribution_from_tiles():
+def test_extract_platform_reported_ids_and_kind():
+    # ids CONFERMATI dalla discovery /tw_check (platform-reported via TW).
     summary = [
-        {"metricId": "pixelFacebookPurchases", "values": {"current": 42}},
-        {"metricId": "pixelFacebookConversionValue", "values": {"current": 5000.0}},
-        {"metricId": "pixelTiktokPurchases", "values": {"current": 5}},
-        # google assente -> non deve comparire
+        {"metricId": "facebookPurchases", "values": {"current": 42}},
+        {"metricId": "facebookConversionValue", "values": {"current": 5000.0}},
+        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 8}},
+        {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 900.0}},
+        {"metricId": "tiktokPurchases", "values": {"current": 5}},
+        {"metricId": "tiktokConversionValue", "values": {"current": 300.0}},
+        {"metricId": "pixelPurchases", "values": {"current": 120}},
+        {"metricId": "pixelConversionValue", "values": {"current": 14000.0}},
     ]
     px = extract_pixel_attribution(summary)
-    assert px["meta"] == {"orders": 42.0, "revenue": 5000.0}
-    assert px["tiktok"]["orders"] == 5.0 and px["tiktok"]["revenue"] == 0.0
-    assert "google" not in px
+    assert px["meta"]["orders"] == 42.0 and px["meta"]["revenue"] == 5000.0
+    assert px["meta"]["kind"] == "platform-reported"
+    assert px["meta"]["orders_metric"] == "facebookPurchases"
+    assert px["google"]["revenue"] == 900.0 and px["google"]["kind"] == "platform-reported"
+    assert px["tiktok"]["orders"] == 5.0
+    # totale pixel del negozio
+    assert px["pixel_total"] == {"orders": 120.0, "revenue": 14000.0, "kind": "pixel",
+                                 "orders_metric": "pixelPurchases",
+                                 "revenue_metric": "pixelConversionValue"}
+
+
+def test_extract_prefers_per_channel_pixel_over_platform():
+    # Se esiste il pixel per-canale, va preferito e marcato kind=pixel.
+    summary = [
+        {"metricId": "facebookPurchases", "values": {"current": 42}},          # platform
+        {"metricId": "pixelFacebookPurchases", "values": {"current": 30}},      # pixel (preferito)
+        {"metricId": "pixelFacebookConversionValue", "values": {"current": 3300.0}},
+    ]
+    px = extract_pixel_attribution(summary)
+    assert px["meta"]["orders"] == 30.0 and px["meta"]["kind"] == "pixel"
+    assert px["meta"]["orders_metric"] == "pixelFacebookPurchases"
 
 
 def test_tw_pixel_by_month():
     rows = [
-        {"day": "2026-09-01", "channel": "meta", "orders": 40, "revenue": 4000.0},
-        {"day": "2026-09-02", "channel": "meta", "orders": 2, "revenue": 200.0},
-        {"day": "2026-09-02", "channel": "google", "orders": 3, "revenue": 300.0},
+        {"day": "2026-09-01", "channel": "meta", "orders": 40, "revenue": 4000.0,
+         "kind": "platform-reported"},
+        {"day": "2026-09-02", "channel": "meta", "orders": 2, "revenue": 200.0,
+         "kind": "platform-reported"},
+        {"day": "2026-09-02", "channel": "google", "orders": 3, "revenue": 300.0,
+         "kind": "platform-reported"},
     ]
     by = tw_pixel_by_month(rows)
-    assert by["2026-09"]["meta"] == {"orders": 42.0, "revenue": 4200.0}
-    assert by["2026-09"]["google"] == {"orders": 3.0, "revenue": 300.0}
+    assert by["2026-09"]["meta"]["orders"] == 42.0 and by["2026-09"]["meta"]["revenue"] == 4200.0
+    assert by["2026-09"]["meta"]["kind"] == "platform-reported"
+    assert by["2026-09"]["google"]["orders"] == 3.0 and by["2026-09"]["google"]["revenue"] == 300.0

@@ -218,7 +218,8 @@ class SupabaseStore:
         self.client.table("tw_pixel_daily").delete().eq("day", day).execute()
         rows = [
             {"day": day, "channel": c, "orders": round(float(v.get("orders") or 0), 2),
-             "revenue": round(float(v.get("revenue") or 0), 2)}
+             "revenue": round(float(v.get("revenue") or 0), 2),
+             "kind": v.get("kind") or "platform-reported"}
             for c, v in (by_channel or {}).items()
             if (float(v.get("orders") or 0) != 0 or float(v.get("revenue") or 0) != 0)
         ]

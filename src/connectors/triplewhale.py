@@ -286,33 +286,45 @@ def extract_google(summary: dict) -> Optional[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# Attribuzione PIXEL Triple Whale per canale (second opinion accanto al last-click
-# Shopify e all'auto-attribuzione delle piattaforme).
+# Attribuzione TW per canale (second opinion accanto al last-click Shopify e
+# all'auto-attribuzione delle piattaforme).
 #
-# I tile pixel di TW hanno nomi che variano tra account: si prova una lista di alias per
-# canale e si prende il PRIMO metricId presente. Se non c'è nessun tile pixel -> None.
-# Valori già in USD. `orders` = pixelPurchases del canale ; `revenue` = pixel conversion value.
+# I candidati sono in ordine di PREFERENZA: prima le varianti PIXEL per canale (se il tuo
+# account le espone), poi le metriche PLATFORM-REPORTED via TW (quelle CONFERMATE dalla tua
+# discovery /tw_check). Per ogni metrica si prende il PRIMO metricId presente e si registra
+# se è "pixel" o "platform-reported", così la dashboard etichetta ONESTAMENTE la colonna.
+#
+# `kind` per candidato: "pixel" (vero pixel per-canale TW) | "platform-reported" (numeri che
+# la piattaforma dichiara, esposti da TW). Valori già in USD.
 # --------------------------------------------------------------------------- #
-PIXEL_METRIC_IDS = {
+CHANNEL_METRIC_CANDIDATES = {
     "meta": {
-        "orders": ("pixelFacebookPurchases", "facebookPixelPurchases",
-                   "pixel_facebook_purchases", "pixelMetaPurchases"),
-        "revenue": ("pixelFacebookConversionValue", "facebookPixelConversionValue",
-                    "pixel_facebook_conversion_value", "pixelMetaConversionValue"),
+        "orders": (("pixel", "pixelFacebookPurchases"), ("pixel", "facebookPixelPurchases"),
+                   ("platform-reported", "facebookPurchases"),
+                   ("platform-reported", "facebookWebPurchases")),
+        "revenue": (("pixel", "pixelFacebookConversionValue"),
+                    ("pixel", "facebookPixelConversionValue"),
+                    ("platform-reported", "facebookConversionValue"),
+                    ("platform-reported", "facebookWebConversionValue")),
     },
     "google": {
-        "orders": ("pixelGooglePurchases", "googlePixelPurchases",
-                   "pixel_google_purchases"),
-        "revenue": ("pixelGoogleConversionValue", "googlePixelConversionValue",
-                    "pixel_google_conversion_value"),
+        "orders": (("pixel", "pixelGooglePurchases"),
+                   ("platform-reported", "ga_all_transactions_adGroup")),
+        "revenue": (("pixel", "pixelGoogleConversionValue"),
+                    ("platform-reported", "ga_all_transactionsRevenue_adGroup")),
     },
     "tiktok": {
-        "orders": ("pixelTiktokPurchases", "tiktokPixelPurchases",
-                   "pixel_tiktok_purchases"),
-        "revenue": ("pixelTiktokConversionValue", "tiktokPixelConversionValue",
-                    "pixel_tiktok_conversion_value"),
+        "orders": (("pixel", "pixelTiktokPurchases"),
+                   ("platform-reported", "tiktokPurchases")),
+        "revenue": (("pixel", "pixelTiktokConversionValue"),
+                    ("platform-reported", "tiktokConversionValue")),
     },
 }
+
+# TOTALE pixel del negozio (non per canale): pixelPurchases è l'attribuzione pixel complessiva.
+PIXEL_TOTAL_ORDERS = ("pixelPurchases",)
+PIXEL_TOTAL_REVENUE = ("pixelConversionValue", "pixelPurchasesValue", "pixelRevenue",
+                       "totalPixelConversionValue", "pixelAttributedRevenue")
 
 
 def _first_present(vals: dict, keys) -> Optional[float]:
@@ -322,18 +334,40 @@ def _first_present(vals: dict, keys) -> Optional[float]:
     return None
 
 
+def _pick_candidate(vals: dict, candidates) -> tuple[Optional[float], Optional[str], Optional[str]]:
+    """Ritorna (valore, kind, metricId) del PRIMO candidato presente, altrimenti (None, None, None)."""
+    for kind, mid in candidates:
+        if mid in vals:
+            return _num(vals.get(mid)), kind, mid
+    return None, None, None
+
+
 def extract_pixel_attribution(summary: dict) -> dict[str, dict]:
     """
-    {channel: {orders, revenue}} per meta/google/tiktok dai tile pixel di TW (USD).
-    Include SOLO i canali per cui esiste almeno un tile pixel (orders o revenue). Dict vuoto
-    se il Summary non espone metriche pixel per canale.
+    {channel: {orders, revenue, kind, orders_metric, revenue_metric}} per meta/google/tiktok,
+    più 'pixel_total' (attribuzione pixel complessiva) se disponibile. Valori in USD.
+
+    `kind` = "pixel" se orders viene da una metrica pixel per-canale, altrimenti
+    "platform-reported". Include SOLO i canali con almeno una metrica presente.
     """
     vals = collect_metric_values(summary)
     out: dict[str, dict] = {}
-    for channel, ids in PIXEL_METRIC_IDS.items():
-        orders = _first_present(vals, ids["orders"])
-        revenue = _first_present(vals, ids["revenue"])
+    for channel, spec in CHANNEL_METRIC_CANDIDATES.items():
+        orders, o_kind, o_mid = _pick_candidate(vals, spec["orders"])
+        revenue, r_kind, r_mid = _pick_candidate(vals, spec["revenue"])
         if orders is None and revenue is None:
             continue
-        out[channel] = {"orders": orders or 0.0, "revenue": revenue or 0.0}
+        # kind del canale = quello degli ORDINI (o della revenue se orders assente)
+        kind = o_kind or r_kind or "platform-reported"
+        out[channel] = {"orders": orders or 0.0, "revenue": revenue or 0.0,
+                        "kind": kind, "orders_metric": o_mid, "revenue_metric": r_mid}
+
+    # Totale pixel del negozio (canale sintetico 'pixel_total').
+    total_orders = _first_present(vals, PIXEL_TOTAL_ORDERS)
+    total_revenue = _first_present(vals, PIXEL_TOTAL_REVENUE)
+    if total_orders is not None or total_revenue is not None:
+        out["pixel_total"] = {"orders": total_orders or 0.0, "revenue": total_revenue or 0.0,
+                              "kind": "pixel",
+                              "orders_metric": next((m for m in PIXEL_TOTAL_ORDERS if m in vals), None),
+                              "revenue_metric": next((m for m in PIXEL_TOTAL_REVENUE if m in vals), None)}
     return out

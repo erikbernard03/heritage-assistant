@@ -129,9 +129,13 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
         source_agg = {}
     try:
         for r in store.get_table_range("tw_pixel_daily", start_iso, end_iso):
-            acc = tw_pixel_agg.setdefault(r.get("channel") or "other", {"orders": 0.0, "revenue": 0.0})
+            acc = tw_pixel_agg.setdefault(
+                r.get("channel") or "other",
+                {"orders": 0.0, "revenue": 0.0, "kind": r.get("kind") or "platform-reported"})
             acc["orders"] += float(r.get("orders") or 0)
             acc["revenue"] += float(r.get("revenue") or 0)
+            if r.get("kind"):
+                acc["kind"] = r.get("kind")
     except Exception:  # noqa: BLE001
         tw_pixel_agg = {}
 
@@ -1141,25 +1145,38 @@ def _last_click_df(by_source: dict) -> "pd.DataFrame":
     } for r in rows])
 
 
-def _three_way_df(meta_self: dict, google_self: dict, tw_pixel: dict, by_source: dict) -> "pd.DataFrame":
-    """Confronto a 3 vie per Meta e Google: auto-attribuzione piattaforma / pixel TW / last-click."""
+def _tw_col_label(tw_pixel: dict) -> str:
+    """Etichetta ONESTA della colonna TW: 'TW pixel' solo se i valori vengono da metriche pixel;
+    altrimenti 'TW (platform-reported)'."""
+    kinds = {(v.get("kind") or "platform-reported")
+             for k, v in (tw_pixel or {}).items() if k in ("meta", "google", "tiktok")}
+    if kinds and kinds == {"pixel"}:
+        return "TW pixel"
+    if not kinds:
+        return "TW"
+    return "TW (platform-reported)"
+
+
+def _three_way_df(meta_self: dict, google_self: dict, tw_pixel: dict, by_source: dict,
+                  tw_label: str) -> "pd.DataFrame":
+    """Confronto a 3 vie per Meta e Google: auto-attribuzione piattaforma / TW / last-click."""
     twm, twg = (tw_pixel.get("meta") or {}), (tw_pixel.get("google") or {})
     lc_meta = by_source.get("meta") or {}
     lc_gp = by_source.get("google_paid") or {}
     rows = [
         {"Channel": "Meta",
          "Platform claims $": round(float(meta_self.get("revenue") or 0), 2),
-         "TW pixel $": round(float(twm.get("revenue") or 0), 2),
+         f"{tw_label} $": round(float(twm.get("revenue") or 0), 2),
          "Last-click $": round(float(lc_meta.get("revenue") or 0), 2),
          "Platform ord": int(meta_self.get("orders") or 0),
-         "TW pixel ord": round(float(twm.get("orders") or 0), 1),
+         f"{tw_label} ord": round(float(twm.get("orders") or 0), 1),
          "Last-click ord": int(lc_meta.get("orders") or 0)},
         {"Channel": "Google",
          "Platform claims $": round(float(google_self.get("revenue") or 0), 2),
-         "TW pixel $": round(float(twg.get("revenue") or 0), 2),
+         f"{tw_label} $": round(float(twg.get("revenue") or 0), 2),
          "Last-click $": round(float(lc_gp.get("revenue") or 0), 2),
          "Platform ord": int(google_self.get("orders") or 0),
-         "TW pixel ord": round(float(twg.get("orders") or 0), 1),
+         f"{tw_label} ord": round(float(twg.get("orders") or 0), 1),
          "Last-click ord": int(lc_gp.get("orders") or 0)},
     ]
     return pd.DataFrame(rows)
@@ -1178,11 +1195,21 @@ def _render_three_way(meta_self: dict, google_self: dict, tw_pixel: dict, by_sou
                    tw_pixel, by_source.get("meta"), by_source.get("google_paid")])
     if not has_any:
         return
-    st.markdown("**Three-way attribution — Meta claims / TW pixel / last-click**")
-    st.dataframe(_three_way_df(meta_self, google_self, tw_pixel, by_source),
+    tw_label = _tw_col_label(tw_pixel)
+    st.markdown(f"**Three-way attribution — Meta claims / {tw_label} / last-click**")
+    st.dataframe(_three_way_df(meta_self, google_self, tw_pixel, by_source, tw_label),
                  hide_index=True, use_container_width=True)
+    if tw_label == "TW (platform-reported)":
+        st.caption("ℹ️ TW column shows **platform-reported** numbers via Triple Whale "
+                   "(facebookPurchases / ga_all_transactions / tiktokPurchases), not TW's own "
+                   "per-channel pixel — those metrics aren't exposed on this account.")
+    total = tw_pixel.get("pixel_total") or {}
+    if total.get("orders") or total.get("revenue"):
+        st.caption(f"TW total pixel-attributed (all channels): "
+                   f"{float(total.get('orders') or 0):,.0f} orders · "
+                   f"${float(total.get('revenue') or 0):,.0f}")
     if not tw_pixel:
-        st.caption("TW pixel column empty: no Triple Whale pixel tiles found yet (nightly only).")
+        st.caption("TW column empty: no Triple Whale attribution metrics found yet (nightly only).")
 
 
 def _render_sales_source_period(data: dict) -> None:

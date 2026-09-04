@@ -37,8 +37,11 @@ def _rome_window(days_back_start: int, days_back_end: int):
     return start.isoformat(), end.isoformat(), label
 
 
-# keyword per scoprire i metricId di CPA/conversioni TikTok & Google nel Summary
-_TILE_SCAN_KEYWORDS = ("cpa", "conversion", "purchase", "cost per", "tiktok", "google", "ga_")
+# keyword per scoprire i metricId di CPA/conversioni TikTok & Google nel Summary.
+# 'pixel'/'facebook'/'conversionvalue' aggiunti per scoprire i metricId di attribuzione
+# per canale (tw_pixel_daily): serve a distinguere pixel vero da platform-reported.
+_TILE_SCAN_KEYWORDS = ("cpa", "conversion", "purchase", "cost per", "tiktok", "google",
+                       "ga_", "pixel", "facebook", "conversionvalue")
 
 
 def _scan_metric_tiles(summary: dict, keywords=_TILE_SCAN_KEYWORDS, limit: int = 150) -> list[str]:
@@ -383,6 +386,24 @@ def google_diagnostic() -> str:
             )
         except Exception as exc:  # noqa: BLE001
             out.append(f"❌ call FAILED: {exc}")
+
+    # Attribuzione per canale risolta (tw_pixel_daily): mostra QUALI metricId sono stati scelti
+    # e se sono 'pixel' o 'platform-reported'. Serve a confermare il wiring dopo la discovery.
+    out.append("\n— Channel attribution resolved (feeds tw_pixel_daily) —")
+    try:
+        from src.connectors.triplewhale import extract_pixel_attribution
+
+        summ = tw.get_summary(yesterday, yesterday)
+        px = extract_pixel_attribution(summ)
+        if not px:
+            out.append("⚠️ No attribution metrics matched (per-channel columns will be empty).")
+        for ch, v in px.items():
+            out.append(
+                f"  {ch}: orders={float(v.get('orders') or 0):,.1f} "
+                f"rev=${float(v.get('revenue') or 0):,.2f} · kind={v.get('kind')} "
+                f"[{v.get('orders_metric')} / {v.get('revenue_metric')}]")
+    except Exception as exc:  # noqa: BLE001
+        out.append(f"❌ attribution probe failed: {exc}")
 
     # CVR primaria: Shopify (ShopifyQL FROM sessions) — verifica scope read_reports
     out.append("\n— Shopify Store CVR (primary, ShopifyQL FROM sessions) —")

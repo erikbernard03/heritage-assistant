@@ -261,7 +261,10 @@ def tw_pixel_by_month(rows: list[dict]) -> dict[str, dict[str, dict]]:
     for r in rows:
         month = str(r.get("day", ""))[:7]
         ch = r.get("channel") or "other"
-        acc = by.setdefault(month, {}).setdefault(ch, {"orders": 0.0, "revenue": 0.0})
+        acc = by.setdefault(month, {}).setdefault(
+            ch, {"orders": 0.0, "revenue": 0.0, "kind": r.get("kind") or "platform-reported"})
         acc["orders"] += _to_float(r.get("orders"))
         acc["revenue"] += _to_float(r.get("revenue"))
+        if r.get("kind"):
+            acc["kind"] = r.get("kind")
     return {k: by[k] for k in sorted(by)}
