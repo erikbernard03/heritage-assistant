@@ -26,7 +26,8 @@ CANONICAL_SOURCES = (
 )
 
 _META_SOURCES = {"facebook", "instagram", "fb", "ig", "meta", "facebook_ads", "ig_ads", "an"}
-_META_REF = ("facebook.com", "instagram.com", "fb.me", "l.facebook", "lm.facebook",
+# NB: "faceb" cattura anche i referrer TRONCATI (es. "Faceb") oltre a facebook.com/l.facebook.
+_META_REF = ("faceb", "instagram.com", "instagr", "fb.me", "l.facebook", "lm.facebook",
              "m.facebook", "l.instagram")
 _TIKTOK_SOURCES = {"tiktok", "tiktok_ads", "tt", "ttclid"}
 _PINTEREST_SOURCES = {"pinterest", "pin"}
@@ -38,10 +39,11 @@ _KLAVIYO_CLICK_PARAMS = ("_kx", "klclid")
 _PAID_MEDIUMS = {"cpc", "ppc", "paid", "paidsearch", "paid_search", "paid-search",
                  "paid_social", "paidsocial"}
 
-# Domini INTERNI: non sono mai una "sorgente" (es. la pagina ring-sizer di heritagering.com,
-# o il dominio myshopify dello store). Un referrer interno va ignorato -> classifica per UTM,
-# altrimenti "direct".
-_INTERNAL_DOMAINS = ("heritagering.com",)
+# Domini INTERNI / UTILITY del flusso d'acquisto: non sono mai una "sorgente" di traffico
+# (la pagina ring-sizer su heritagering.com, il dominio myshopify dello store, e il widget
+# esterno di ring-sizing ringsizer.app che compare nel checkout). Referrer interno/utility ->
+# ignorato -> classifica per UTM, altrimenti "direct".
+_INTERNAL_DOMAINS = ("heritagering.com", "ringsizer.app")
 
 
 def _is_internal_domain(domain: str) -> bool:
@@ -206,24 +208,31 @@ def top_sources(by_source: dict[str, dict], n: int = 4) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
-# ROLLUP a 3 gruppi (Paid / Organic / Email) — mapping CONFIGURABILE, così i bucket
-# possono spostarsi tra gruppi senza toccare la logica.
+# ROLLUP a 4 gruppi headline — mapping CONFIGURABILE, così i bucket possono spostarsi tra
+# gruppi senza toccare la logica.
 #
-# NB: PAID è la vista LAST-CLICK. "meta" include gli acquisti Meta NON attribuiti da UTM
-# (gli ads Meta non hanno ancora UTM: il traffico referral da facebook è in larga parte a
-# pagamento) -> etichetta "Meta incl. unattributed". Le cifre auto-dichiarate da Meta e il
-# pixel Triple Whale restano nel confronto a 3 vie, NON in questo rollup.
+#   FB ads     = bucket "meta" (last-click). Include l'organico Meta: senza UTM sugli ads non
+#                è separabile dal traffico referral facebook/instagram, in gran parte a pagamento.
+#   Google ads = "google_paid".
+#   Klaviyo    = "email" (incl. click _kx/klclid).
+#   Organic    = direct + motori di ricerca (google_organic/bing/yahoo/duckduckgo/brave) +
+#                tiktok + pinterest + meta_organic (futuro) + qualsiasi altro/sconosciuto.
+#
+# È la vista LAST-CLICK. Le cifre auto-dichiarate da Meta/Google e il pixel Triple Whale
+# restano nel confronto a 3 vie, NON in questo rollup.
 # --------------------------------------------------------------------------- #
 SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
-    "Paid": ("meta", "google_paid"),
-    "Organic": ("direct", "google_organic", "tiktok", "pinterest", "meta_organic", "other"),
-    "Email": ("email",),
+    "FB ads": ("meta",),
+    "Google ads": ("google_paid",),
+    "Klaviyo": ("email",),
+    "Organic": ("direct", "google_organic", "tiktok", "pinterest", "meta_organic",
+                "bing", "yahoo", "duckduckgo", "brave", "other"),
 }
-_GROUP_ORDER = ("Paid", "Organic", "Email")
+_GROUP_ORDER = ("FB ads", "Google ads", "Klaviyo", "Organic")
 
 
 def group_of(source: str) -> str:
-    """Gruppo di un bucket sorgente. Gli sconosciuti (stringhe grezze "other") -> Organic."""
+    """Gruppo di un bucket sorgente. Gli sconosciuti (stringhe grezze) -> Organic."""
     for group, buckets in SOURCE_GROUPS.items():
         if source in buckets:
             return group
@@ -232,8 +241,8 @@ def group_of(source: str) -> str:
 
 def rollup_groups(by_source: dict[str, dict]) -> list[dict]:
     """
-    Aggrega i bucket nei 3 gruppi headline: [{group, orders, revenue, pct}] in ordine
-    Paid, Organic, Email. `by_source`: {source: {orders, revenue}}.
+    Aggrega i bucket nei 4 gruppi headline: [{group, orders, revenue, pct}] in ordine
+    FB ads, Google ads, Klaviyo, Organic. `by_source`: {source: {orders, revenue}}.
     """
     groups = {g: {"orders": 0, "revenue": 0.0} for g in _GROUP_ORDER}
     for source, v in by_source.items():

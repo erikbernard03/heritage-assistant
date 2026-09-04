@@ -1116,20 +1116,29 @@ def _source_label(source: str) -> str:
     return _SOURCE_LABELS.get(source, (source or "other").replace("_", " ").title())
 
 
+_ROLLUP_LABELS = {
+    "FB ads": "FB/IG ads (incl. organic — unsplittable until ad UTMs)",
+    "Google ads": "Google ads",
+    "Klaviyo": "Klaviyo",
+    "Organic": "Organic",
+}
+
+
 def _render_rollup_cards(by_source: dict) -> None:
-    """Tre card headline Paid / Organic / Email (last-click), % del totale — mobile-readable."""
+    """Quattro card headline FB ads / Google ads / Klaviyo / Organic (last-click), % del totale."""
     from src.metrics.sales_source import rollup_groups
 
     roll = rollup_groups(by_source)
     if not any(r["revenue"] or r["orders"] for r in roll):
         return
-    cols = st.columns(3)
+    cols = st.columns(4)
     for col, r in zip(cols, roll):
-        col.metric(r["group"], f"${r['revenue']:,.0f}",
+        col.metric(_ROLLUP_LABELS.get(r["group"], r["group"]), f"${r['revenue']:,.0f}",
                    f"{r['pct']:.0f}% · {r['orders']} ord", delta_color="off")
-    st.caption("Rollup = **last-click view only**. Paid = Meta (incl. unattributed — ads have "
-               "no UTM yet) + Google paid. Meta's own claim & TW pixel are in the three-way "
-               "table below, not here.")
+    st.caption("Rollup = **last-click view only**. FB/IG ads = the Meta bucket (ads have no UTM "
+               "yet, so paid + organic Meta are merged). Organic = direct + search engines + "
+               "TikTok + Pinterest + other. Meta/Google's own claim & TW pixel are in the "
+               "three-way table below, not here.")
 
 
 def _last_click_df(by_source: dict) -> "pd.DataFrame":

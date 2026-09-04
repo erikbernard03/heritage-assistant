@@ -83,27 +83,38 @@ def test_internal_referrer_never_a_source():
     assert classify_order(_order(referring="https://heritagering.com/apps/ring-sizer")) == "direct"
     assert classify_order(_order(referring="https://www.heritagering.com/pages/sizer")) == "direct"
     assert classify_order(_order(referring="https://heritagering.myshopify.com/")) == "direct"
-    # referrer interno MA con UTM valido -> vince l'UTM
+    # ringsizer.app: widget esterno di ring-sizing nel checkout -> utility, non sorgente (B)
+    assert classify_order(_order(referring="https://ringsizer.app/widget")) == "direct"
+    assert classify_order(_order(referring="https://www.ringsizer.app/")) == "direct"
+    # referrer interno/utility MA con UTM valido -> vince l'UTM
     assert classify_order(_order(landing="/p?utm_source=facebook",
-                                 referring="https://heritagering.com/apps/ring-sizer")) == "meta"
+                                 referring="https://ringsizer.app/widget")) == "meta"
 
 
-def test_rollup_groups_paid_organic_email():
+def test_meta_from_truncated_faceb_referrer():
+    # Referrer troncato "Faceb" deve cadere nel bucket meta (B).
+    assert classify_order(_order(referring="Faceb")) == "meta"
+    assert classify_order(_order(referring="faceb")) == "meta"
+
+
+def test_rollup_groups_four_cards():
     by = {
         "meta": {"orders": 10, "revenue": 1000.0},
         "google_paid": {"orders": 5, "revenue": 500.0},
         "google_organic": {"orders": 2, "revenue": 200.0},
         "direct": {"orders": 3, "revenue": 100.0},
         "email": {"orders": 4, "revenue": 400.0},
-        "reddit": {"orders": 1, "revenue": 50.0},          # sconosciuto -> Organic
+        "bing.com": {"orders": 1, "revenue": 50.0},        # motore di ricerca -> Organic
+        "reddit": {"orders": 1, "revenue": 30.0},          # sconosciuto -> Organic
     }
     roll = {r["group"]: r for r in rollup_groups(by)}
-    assert roll["Paid"]["revenue"] == 1500.0 and roll["Paid"]["orders"] == 15
-    assert roll["Email"]["revenue"] == 400.0
-    assert roll["Organic"]["revenue"] == 350.0            # 200 + 100 + 50 (reddit)
-    assert group_of("reddit") == "Organic" and group_of("meta") == "Paid"
-    # % sul totale (2250)
-    assert roll["Paid"]["pct"] == round(1500 / 2250 * 100, 1)
+    assert set(roll) == {"FB ads", "Google ads", "Klaviyo", "Organic"}
+    assert roll["FB ads"]["revenue"] == 1000.0 and roll["FB ads"]["orders"] == 10
+    assert roll["Google ads"]["revenue"] == 500.0
+    assert roll["Klaviyo"]["revenue"] == 400.0
+    assert roll["Organic"]["revenue"] == 380.0            # 200 + 100 + 50 + 30
+    assert group_of("meta") == "FB ads" and group_of("google_paid") == "Google ads"
+    assert group_of("bing.com") == "Organic" and group_of("reddit") == "Organic"
 
 
 def test_utm_from_note_attributes_fallback():
