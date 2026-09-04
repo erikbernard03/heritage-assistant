@@ -32,8 +32,37 @@ _TIKTOK_SOURCES = {"tiktok", "tiktok_ads", "tt", "ttclid"}
 _PINTEREST_SOURCES = {"pinterest", "pin"}
 _EMAIL_SOURCES = {"klaviyo", "email", "newsletter"}
 _EMAIL_MEDIUMS = {"email", "e-mail", "flow", "campaign"}
+# Klaviyo aggiunge questi query param ai link ANCHE quando il tracking UTM è disattivato:
+# sono un segnale forte di click da email/flow Klaviyo.
+_KLAVIYO_CLICK_PARAMS = ("_kx", "klclid")
 _PAID_MEDIUMS = {"cpc", "ppc", "paid", "paidsearch", "paid_search", "paid-search",
                  "paid_social", "paidsocial"}
+
+# Domini INTERNI: non sono mai una "sorgente" (es. la pagina ring-sizer di heritagering.com,
+# o il dominio myshopify dello store). Un referrer interno va ignorato -> classifica per UTM,
+# altrimenti "direct".
+_INTERNAL_DOMAINS = ("heritagering.com",)
+
+
+def _is_internal_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    d = domain.lower()
+    if d.endswith(".myshopify.com"):
+        return True
+    for base in _INTERNAL_DOMAINS:
+        if d == base or d.endswith("." + base):
+            return True
+    try:  # dominio dello store da settings (best-effort, non blocca la funzione pura)
+        from config import settings
+
+        store = (settings.SHOPIFY_STORE or "").lower()
+        store = store.replace("https://", "").replace("http://", "").strip("/")
+        if len(store) >= 4 and (d == store or store in d):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
 
 
 def _to_float(value) -> float:
@@ -43,14 +72,19 @@ def _to_float(value) -> float:
         return 0.0
 
 
+def _landing_query(order: dict) -> dict:
+    """Query param del landing_site come dict {chiave: [valori]} (minuscolo le chiavi)."""
+    landing = order.get("landing_site") or order.get("landing_site_ref") or ""
+    if not landing:
+        return {}
+    return {k.lower(): v for k, v in parse_qs(urlparse(landing).query).items()}
+
+
 def _utm_from_order(order: dict) -> tuple[str, str]:
     """(utm_source, utm_medium) dal landing_site; fallback ai note_attributes. Minuscolo."""
-    src = med = ""
-    landing = order.get("landing_site") or order.get("landing_site_ref") or ""
-    if landing:
-        qs = parse_qs(urlparse(landing).query)
-        src = (qs.get("utm_source") or [""])[0]
-        med = (qs.get("utm_medium") or [""])[0]
+    qs = _landing_query(order)
+    src = (qs.get("utm_source") or [""])[0]
+    med = (qs.get("utm_medium") or [""])[0]
     if not src or not med:
         for na in (order.get("note_attributes") or []):
             name = str(na.get("name") or "").lower()
@@ -59,6 +93,12 @@ def _utm_from_order(order: dict) -> tuple[str, str]:
             elif name == "utm_medium" and not med:
                 med = str(na.get("value") or "")
     return src.strip().lower(), med.strip().lower()
+
+
+def _has_klaviyo_click(order: dict) -> bool:
+    """True se il landing_site porta un param di click Klaviyo (_kx / klclid)."""
+    qs = _landing_query(order)
+    return any(k in qs for k in _KLAVIYO_CLICK_PARAMS)
 
 
 def _referrer_domain(order: dict) -> str:
@@ -80,6 +120,11 @@ def classify_order(order: dict) -> str:
     src, med = _utm_from_order(order)
     ref = _referrer_domain(order)
 
+    # Referrer INTERNO (es. pagina ring-sizer di heritagering.com, o dominio myshopify):
+    # non è mai una sorgente -> lo si ignora e si classifica per UTM, altrimenti "direct".
+    if _is_internal_domain(ref):
+        ref = ""
+
     # META (social a pagamento/organico: last-click non distingue, resta "meta")
     if src in _META_SOURCES or any(d in ref for d in _META_REF):
         return "meta"
@@ -89,8 +134,8 @@ def classify_order(order: dict) -> str:
     # PINTEREST
     if src in _PINTEREST_SOURCES or "pinterest." in ref:
         return "pinterest"
-    # EMAIL / KLAVIYO
-    if src in _EMAIL_SOURCES or med in _EMAIL_MEDIUMS:
+    # EMAIL / KLAVIYO (utm klaviyo, medium email, o param di click _kx/klclid)
+    if src in _EMAIL_SOURCES or med in _EMAIL_MEDIUMS or _has_klaviyo_click(order):
         return "email"
     # GOOGLE: paid vs organic
     is_google_src = (src == "google") or ("google." in ref) or (src == "googleads")
@@ -158,6 +203,50 @@ def aggregate_sources(by_source: dict[str, dict]) -> list[dict]:
 def top_sources(by_source: dict[str, dict], n: int = 4) -> list[dict]:
     """Prime `n` sorgenti per revenue (per la riga Telegram)."""
     return aggregate_sources(by_source)[:n]
+
+
+# --------------------------------------------------------------------------- #
+# ROLLUP a 3 gruppi (Paid / Organic / Email) — mapping CONFIGURABILE, così i bucket
+# possono spostarsi tra gruppi senza toccare la logica.
+#
+# NB: PAID è la vista LAST-CLICK. "meta" include gli acquisti Meta NON attribuiti da UTM
+# (gli ads Meta non hanno ancora UTM: il traffico referral da facebook è in larga parte a
+# pagamento) -> etichetta "Meta incl. unattributed". Le cifre auto-dichiarate da Meta e il
+# pixel Triple Whale restano nel confronto a 3 vie, NON in questo rollup.
+# --------------------------------------------------------------------------- #
+SOURCE_GROUPS: dict[str, tuple[str, ...]] = {
+    "Paid": ("meta", "google_paid"),
+    "Organic": ("direct", "google_organic", "tiktok", "pinterest", "meta_organic", "other"),
+    "Email": ("email",),
+}
+_GROUP_ORDER = ("Paid", "Organic", "Email")
+
+
+def group_of(source: str) -> str:
+    """Gruppo di un bucket sorgente. Gli sconosciuti (stringhe grezze "other") -> Organic."""
+    for group, buckets in SOURCE_GROUPS.items():
+        if source in buckets:
+            return group
+    return "Organic"
+
+
+def rollup_groups(by_source: dict[str, dict]) -> list[dict]:
+    """
+    Aggrega i bucket nei 3 gruppi headline: [{group, orders, revenue, pct}] in ordine
+    Paid, Organic, Email. `by_source`: {source: {orders, revenue}}.
+    """
+    groups = {g: {"orders": 0, "revenue": 0.0} for g in _GROUP_ORDER}
+    for source, v in by_source.items():
+        g = group_of(source)
+        groups[g]["orders"] += int(v.get("orders") or 0)
+        groups[g]["revenue"] += _to_float(v.get("revenue"))
+    total = sum(x["revenue"] for x in groups.values()) or 0.0
+    return [
+        {"group": g, "orders": groups[g]["orders"],
+         "revenue": round(groups[g]["revenue"], 2),
+         "pct": (round(groups[g]["revenue"] / total * 100, 1) if total else 0.0)}
+        for g in _GROUP_ORDER
+    ]
 
 
 # --------------------------------------------------------------------------- #

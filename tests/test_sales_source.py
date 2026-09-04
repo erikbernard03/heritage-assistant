@@ -6,7 +6,9 @@ from src.connectors.triplewhale import extract_pixel_attribution
 from src.metrics.sales_source import (
     aggregate_sources,
     classify_order,
+    group_of,
     revenue_by_source,
+    rollup_groups,
     sales_by_source_by_month,
     top_sources,
     tw_pixel_by_month,
@@ -66,6 +68,42 @@ def test_direct_and_other():
     # sconosciuto -> conserva la stringa grezza della sorgente
     assert classify_order(_order(landing="/p?utm_source=reddit&utm_medium=social")) == "reddit"
     assert classify_order(_order(referring="https://news.ycombinator.com/")) == "news.ycombinator.com"
+
+
+def test_email_from_kx_param_without_utm():
+    # Klaviyo appende _kx anche senza UTM: dev'essere classificato email (A).
+    assert classify_order(_order(landing="/products/foo?_kx=abc123.XyZ")) == "email"
+    assert classify_order(_order(landing="/p?klclid=deadbeef")) == "email"
+    # senza _kx e senza UTM resta direct
+    assert classify_order(_order(landing="/products/foo")) == "direct"
+
+
+def test_internal_referrer_never_a_source():
+    # Referrer interno (pagina ring-sizer di heritagering.com) -> NON è una sorgente (B).
+    assert classify_order(_order(referring="https://heritagering.com/apps/ring-sizer")) == "direct"
+    assert classify_order(_order(referring="https://www.heritagering.com/pages/sizer")) == "direct"
+    assert classify_order(_order(referring="https://heritagering.myshopify.com/")) == "direct"
+    # referrer interno MA con UTM valido -> vince l'UTM
+    assert classify_order(_order(landing="/p?utm_source=facebook",
+                                 referring="https://heritagering.com/apps/ring-sizer")) == "meta"
+
+
+def test_rollup_groups_paid_organic_email():
+    by = {
+        "meta": {"orders": 10, "revenue": 1000.0},
+        "google_paid": {"orders": 5, "revenue": 500.0},
+        "google_organic": {"orders": 2, "revenue": 200.0},
+        "direct": {"orders": 3, "revenue": 100.0},
+        "email": {"orders": 4, "revenue": 400.0},
+        "reddit": {"orders": 1, "revenue": 50.0},          # sconosciuto -> Organic
+    }
+    roll = {r["group"]: r for r in rollup_groups(by)}
+    assert roll["Paid"]["revenue"] == 1500.0 and roll["Paid"]["orders"] == 15
+    assert roll["Email"]["revenue"] == 400.0
+    assert roll["Organic"]["revenue"] == 350.0            # 200 + 100 + 50 (reddit)
+    assert group_of("reddit") == "Organic" and group_of("meta") == "Paid"
+    # % sul totale (2250)
+    assert roll["Paid"]["pct"] == round(1500 / 2250 * 100, 1)
 
 
 def test_utm_from_note_attributes_fallback():

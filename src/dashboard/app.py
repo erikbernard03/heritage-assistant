@@ -1102,7 +1102,7 @@ def _render_goals(months: list[dict]) -> None:
 
 
 _SOURCE_LABELS = {
-    "meta": "Meta (FB/IG)", "google_paid": "Google (paid)",
+    "meta": "Meta (incl. unattributed)", "google_paid": "Google (paid)",
     "google_organic": "Google (organic)", "tiktok": "TikTok", "pinterest": "Pinterest",
     "email": "Email/Klaviyo", "direct": "Direct",
 }
@@ -1110,6 +1110,22 @@ _SOURCE_LABELS = {
 
 def _source_label(source: str) -> str:
     return _SOURCE_LABELS.get(source, (source or "other").replace("_", " ").title())
+
+
+def _render_rollup_cards(by_source: dict) -> None:
+    """Tre card headline Paid / Organic / Email (last-click), % del totale — mobile-readable."""
+    from src.metrics.sales_source import rollup_groups
+
+    roll = rollup_groups(by_source)
+    if not any(r["revenue"] or r["orders"] for r in roll):
+        return
+    cols = st.columns(3)
+    for col, r in zip(cols, roll):
+        col.metric(r["group"], f"${r['revenue']:,.0f}",
+                   f"{r['pct']:.0f}% · {r['orders']} ord", delta_color="off")
+    st.caption("Rollup = **last-click view only**. Paid = Meta (incl. unattributed — ads have "
+               "no UTM yet) + Google paid. Meta's own claim & TW pixel are in the three-way "
+               "table below, not here.")
 
 
 def _last_click_df(by_source: dict) -> "pd.DataFrame":
@@ -1179,6 +1195,8 @@ def _render_sales_source_period(data: dict) -> None:
         return
     st.subheader("🧭 Sales by source")
     st.caption("Last-click (order landing data)")
+    if by_source:
+        _render_rollup_cards(by_source)                     # headline Paid / Organic / Email
     st.markdown(_SOURCE_CAVEAT)
     if by_source:
         df = _last_click_df(by_source)
@@ -1210,6 +1228,7 @@ def _render_sales_source_monthly(monthly: dict) -> None:
         total = sum(v["revenue"] for v in by_source.values()) if by_source else 0.0
         with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(by_source)} sources"):
             if by_source:
+                _render_rollup_cards(by_source)             # headline Paid / Organic / Email
                 df = _last_click_df(by_source)
                 st.dataframe(df, hide_index=True, use_container_width=True)
                 st.bar_chart(df.set_index("Source")["Revenue"], height=240)
