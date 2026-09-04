@@ -192,6 +192,41 @@ class SupabaseStore:
             "refund_count": int((agg or {}).get("count") or 0),
         }).execute()
 
+    # -------------------------------------- sales by source (last-click, Fase 9)
+    def upsert_orders_by_source(self, day: str, by_source: dict[str, dict]) -> int:
+        """
+        Riscrive le vendite per SORGENTE del giorno (DELETE-then-INSERT: l'insieme delle
+        sorgenti può cambiare tra run). by_source: {source: {revenue, orders}}.
+        """
+        self.client.table("orders_by_source_daily").delete().eq("day", day).execute()
+        rows = [
+            {"day": day, "source": s, "revenue": round(float(v.get("revenue") or 0), 2),
+             "orders": int(v.get("orders") or 0)}
+            for s, v in (by_source or {}).items()
+            if int(v.get("orders") or 0) != 0
+        ]
+        if not rows:
+            return 0
+        self.client.table("orders_by_source_daily").insert(rows).execute()
+        return len(rows)
+
+    def upsert_tw_pixel_daily(self, day: str, by_channel: dict[str, dict]) -> int:
+        """
+        Riscrive l'attribuzione pixel Triple Whale del giorno (DELETE-then-INSERT).
+        by_channel: {channel: {orders, revenue}}.
+        """
+        self.client.table("tw_pixel_daily").delete().eq("day", day).execute()
+        rows = [
+            {"day": day, "channel": c, "orders": round(float(v.get("orders") or 0), 2),
+             "revenue": round(float(v.get("revenue") or 0), 2)}
+            for c, v in (by_channel or {}).items()
+            if (float(v.get("orders") or 0) != 0 or float(v.get("revenue") or 0) != 0)
+        ]
+        if not rows:
+            return 0
+        self.client.table("tw_pixel_daily").insert(rows).execute()
+        return len(rows)
+
     def upsert_sales_by_hour(self, day: str, by_hour: dict[int, dict]) -> int:
         """
         Riscrive le vendite per ORA del giorno `day` (DELETE-then-INSERT). by_hour:
@@ -263,7 +298,7 @@ class SupabaseStore:
         "daily_metrics", "meta_daily", "meta_campaigns", "tiktok_daily",
         "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
         "product_units_daily", "sales_by_country_daily", "sales_by_hour_daily",
-        "stripe_daily", "refunds_daily",
+        "stripe_daily", "refunds_daily", "orders_by_source_daily", "tw_pixel_daily",
     }
 
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:

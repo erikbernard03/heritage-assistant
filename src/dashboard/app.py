@@ -117,6 +117,24 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
     lookback_rows = store.get_daily_metrics_range(lb_start, end_iso)
     be_series = daily_breakeven_series(lookback_rows, set(days))
 
+    # Sorgenti last-click + pixel Triple Whale del periodo (best-effort: tabelle Fase 9).
+    source_agg: dict[str, dict] = {}
+    tw_pixel_agg: dict[str, dict] = {}
+    try:
+        for r in store.get_table_range("orders_by_source_daily", start_iso, end_iso):
+            acc = source_agg.setdefault(r.get("source") or "other", {"orders": 0, "revenue": 0.0})
+            acc["orders"] += int(r.get("orders") or 0)
+            acc["revenue"] += float(r.get("revenue") or 0)
+    except Exception:  # noqa: BLE001 — migration 014 non ancora eseguita
+        source_agg = {}
+    try:
+        for r in store.get_table_range("tw_pixel_daily", start_iso, end_iso):
+            acc = tw_pixel_agg.setdefault(r.get("channel") or "other", {"orders": 0.0, "revenue": 0.0})
+            acc["orders"] += float(r.get("orders") or 0)
+            acc["revenue"] += float(r.get("revenue") or 0)
+    except Exception:  # noqa: BLE001
+        tw_pixel_agg = {}
+
     return {
         "metrics": {
             "num_orders": m.num_orders, "revenue": m.revenue, "aov": m.aov,
@@ -133,6 +151,12 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
         "num_days": len(days),
         "daily_rows": sorted(daily_rows, key=lambda r: r["day"]),
         "be_series": be_series,
+        "source_agg": source_agg,
+        "tw_pixel_agg": tw_pixel_agg,
+        "meta_self": {"orders": int((meta_daily or {}).get("orders") or 0),
+                      "revenue": float((meta_daily or {}).get("revenue") or 0.0)},
+        "google_self": {"orders": int((google_daily or {}).get("orders") or 0),
+                        "revenue": float((google_daily or {}).get("revenue") or 0.0)},
     }
 
 
@@ -222,6 +246,11 @@ def _compute_monthly() -> dict | None:
             "meta_roas": float((meta_daily or {}).get("roas") or 0.0),
             "google_roas": float((google_daily or {}).get("roas") or 0.0),
             "tiktok_roas": float((tiktok_daily or {}).get("roas") or 0.0),
+            # Auto-attribuzione piattaforma (per il confronto a 3 vie con pixel TW e last-click)
+            "meta_self": {"orders": int((meta_daily or {}).get("orders") or 0),
+                          "revenue": float((meta_daily or {}).get("revenue") or 0.0)},
+            "google_self": {"orders": int((google_daily or {}).get("orders") or 0),
+                            "revenue": float((google_daily or {}).get("revenue") or 0.0)},
             "total_ad_spend": float(m.ads_spend or 0.0),   # Meta + TikTok + Google
             "cogs_total": float(m.cogs_total or 0.0),
             "shipping_total": float(m.shipping_total or 0.0),
@@ -252,6 +281,15 @@ def _compute_monthly() -> dict | None:
     hour_rows = store.get_table_range("sales_by_hour_daily", "2000-01-01", today_iso)
     stripe_rows = store.get_table_range("stripe_daily", "2000-01-01", today_iso)
     refunds_rows = store.get_table_range("refunds_daily", "2000-01-01", today_iso)
+    from src.metrics.sales_source import sales_by_source_by_month, tw_pixel_by_month
+    try:
+        source_rows = store.get_table_range("orders_by_source_daily", "2000-01-01", today_iso)
+    except Exception:  # noqa: BLE001 — migration 014 non ancora eseguita
+        source_rows = []
+    try:
+        tw_pixel_rows = store.get_table_range("tw_pixel_daily", "2000-01-01", today_iso)
+    except Exception:  # noqa: BLE001
+        tw_pixel_rows = []
     try:
         payout_rows = store.get_stripe_payouts()
         dispute_rows = store.get_stripe_disputes()
@@ -268,6 +306,8 @@ def _compute_monthly() -> dict | None:
         "payouts_by_month": payouts_monthly(payout_rows),
         "refunds_by_month": refunds_monthly(refunds_rows),
         "disputes": dispute_rows,
+        "source_by_month": sales_by_source_by_month(source_rows),
+        "tw_pixel_by_month": tw_pixel_by_month(tw_pixel_rows),
     }
 
 
@@ -1061,6 +1101,123 @@ def _render_goals(months: list[dict]) -> None:
     st.dataframe(df, hide_index=True, use_container_width=True)
 
 
+_SOURCE_LABELS = {
+    "meta": "Meta (FB/IG)", "google_paid": "Google (paid)",
+    "google_organic": "Google (organic)", "tiktok": "TikTok", "pinterest": "Pinterest",
+    "email": "Email/Klaviyo", "direct": "Direct",
+}
+
+
+def _source_label(source: str) -> str:
+    return _SOURCE_LABELS.get(source, (source or "other").replace("_", " ").title())
+
+
+def _last_click_df(by_source: dict) -> "pd.DataFrame":
+    """DataFrame ordinato per revenue con % sul totale (last-click)."""
+    from src.metrics.sales_source import aggregate_sources
+
+    rows = aggregate_sources(by_source)
+    return pd.DataFrame([{
+        "Source": _source_label(r["source"]),
+        "Orders": r["orders"],
+        "Revenue": r["revenue"],
+        "% of total": r["pct"],
+    } for r in rows])
+
+
+def _three_way_df(meta_self: dict, google_self: dict, tw_pixel: dict, by_source: dict) -> "pd.DataFrame":
+    """Confronto a 3 vie per Meta e Google: auto-attribuzione piattaforma / pixel TW / last-click."""
+    twm, twg = (tw_pixel.get("meta") or {}), (tw_pixel.get("google") or {})
+    lc_meta = by_source.get("meta") or {}
+    lc_gp = by_source.get("google_paid") or {}
+    rows = [
+        {"Channel": "Meta",
+         "Platform claims $": round(float(meta_self.get("revenue") or 0), 2),
+         "TW pixel $": round(float(twm.get("revenue") or 0), 2),
+         "Last-click $": round(float(lc_meta.get("revenue") or 0), 2),
+         "Platform ord": int(meta_self.get("orders") or 0),
+         "TW pixel ord": round(float(twm.get("orders") or 0), 1),
+         "Last-click ord": int(lc_meta.get("orders") or 0)},
+        {"Channel": "Google",
+         "Platform claims $": round(float(google_self.get("revenue") or 0), 2),
+         "TW pixel $": round(float(twg.get("revenue") or 0), 2),
+         "Last-click $": round(float(lc_gp.get("revenue") or 0), 2),
+         "Platform ord": int(google_self.get("orders") or 0),
+         "TW pixel ord": round(float(twg.get("orders") or 0), 1),
+         "Last-click ord": int(lc_gp.get("orders") or 0)},
+    ]
+    return pd.DataFrame(rows)
+
+
+_SOURCE_CAVEAT = (
+    "⚠️ **Last-click** = where the order landed (Shopify utm/referrer). It **undercounts ads** "
+    "vs the platform's own claim (view-through, longer windows, untagged clicks). Read it as "
+    "*landing source*, not ad effectiveness. Compare the three methods below — the gap is "
+    "expected. Organic / direct / email come only from last-click."
+)
+
+
+def _render_three_way(meta_self: dict, google_self: dict, tw_pixel: dict, by_source: dict) -> None:
+    has_any = any([meta_self.get("revenue"), google_self.get("revenue"),
+                   tw_pixel, by_source.get("meta"), by_source.get("google_paid")])
+    if not has_any:
+        return
+    st.markdown("**Three-way attribution — Meta claims / TW pixel / last-click**")
+    st.dataframe(_three_way_df(meta_self, google_self, tw_pixel, by_source),
+                 hide_index=True, use_container_width=True)
+    if not tw_pixel:
+        st.caption("TW pixel column empty: no Triple Whale pixel tiles found yet (nightly only).")
+
+
+def _render_sales_source_period(data: dict) -> None:
+    """Sezione Sorgenti (Period tab): last-click + confronto a 3 vie."""
+    by_source = data.get("source_agg") or {}
+    tw_pixel = data.get("tw_pixel_agg") or {}
+    meta_self = data.get("meta_self") or {}
+    google_self = data.get("google_self") or {}
+    if not by_source and not tw_pixel and not meta_self.get("revenue"):
+        return
+    st.subheader("🧭 Sales by source")
+    st.caption("Last-click (order landing data)")
+    st.markdown(_SOURCE_CAVEAT)
+    if by_source:
+        df = _last_click_df(by_source)
+        st.dataframe(df, hide_index=True, use_container_width=True)
+        st.bar_chart(df.set_index("Source")["Revenue"], height=260)
+    else:
+        st.caption("No last-click data for this period yet (run /backfill after migration 014).")
+    _render_three_way(meta_self, google_self, tw_pixel, by_source)
+
+
+def _render_sales_source_monthly(monthly: dict) -> None:
+    """Sezione Sorgenti (Monthly tab): last-click + confronto a 3 vie, per mese."""
+    from src.dashboard.monthly import month_label
+
+    source_by_month = monthly.get("source_by_month") or {}
+    tw_pixel_by_month = monthly.get("tw_pixel_by_month") or {}
+    months = monthly.get("months") or []
+    self_by_month = {r["month"]: r for r in months}
+    if not source_by_month and not tw_pixel_by_month:
+        st.subheader("🧭 Sales by source — per month")
+        st.caption("No source data yet — run /backfill after applying migration 014.")
+        return
+    st.subheader("🧭 Sales by source — per month")
+    st.caption("Last-click (order landing data)")
+    st.markdown(_SOURCE_CAVEAT)
+    all_months = sorted(set(source_by_month) | set(tw_pixel_by_month), reverse=True)
+    for month in all_months:
+        by_source = source_by_month.get(month) or {}
+        total = sum(v["revenue"] for v in by_source.values()) if by_source else 0.0
+        with st.expander(f"{month_label(month)} — ${total:,.2f} · {len(by_source)} sources"):
+            if by_source:
+                df = _last_click_df(by_source)
+                st.dataframe(df, hide_index=True, use_container_width=True)
+                st.bar_chart(df.set_index("Source")["Revenue"], height=240)
+            mr = self_by_month.get(month) or {}
+            _render_three_way(mr.get("meta_self") or {}, mr.get("google_self") or {},
+                              tw_pixel_by_month.get(month) or {}, by_source)
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -1094,6 +1251,7 @@ def _render_period_tab() -> None:
     # (rimossi i grafici "Revenue & net profit trend" e "Daily trends — AOV & break-even")
     _render_platforms(data)
     _render_meta_campaigns(data["meta_campaigns"])
+    _render_sales_source_period(data)                       # sorgenti last-click + 3 vie
     _render_cost_breakdown(m, data["num_days"])
 
 
@@ -1155,6 +1313,7 @@ def _render_monthly_tab() -> None:
     _render_unit_economics(months)                                       # 8
     _render_cost_breakdown_monthly(months)                               # 9
     _render_sales_by_location(monthly.get("sales_by_country_by_month") or {})   # 10
+    _render_sales_source_monthly(monthly)                                 # sorgenti (Fase 9)
     _render_weekday_profit(months)                                        # best/worst weekday
     _render_sales_by_hour(monthly.get("sales_by_hour_by_month") or {})    # best/worst hour
     _render_stripe_money(monthly)                                         # Stripe / Money

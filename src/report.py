@@ -137,7 +137,7 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
     metrics.store_sessions = _load_shopify_sessions(shop, window.day_str)
 
     if persist:
-        _persist(orders, handle_map, metrics)
+        _persist(orders, handle_map, metrics, tw_summary=tw_summary)
 
     return GatheredDay(
         metrics=metrics, meta_daily=meta_daily, meta_campaigns=meta_campaigns,
@@ -759,6 +759,28 @@ def _persist_sales_by_hour(store, day: str, orders: list[dict]) -> None:
         print(f"[report] ⚠️ sales_by_hour non salvate per {day}: {exc}")
 
 
+def _persist_sales_by_source(store, day: str, orders: list[dict]) -> None:
+    """Classifica gli ordini per sorgente last-click e salva (best-effort)."""
+    try:
+        from src.metrics.sales_source import revenue_by_source
+
+        store.upsert_orders_by_source(day, revenue_by_source(orders))
+    except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
+        print(f"[report] ⚠️ orders_by_source non salvate per {day}: {exc}")
+
+
+def _persist_tw_pixel(store, day: str, tw_summary: Optional[dict]) -> None:
+    """Salva l'attribuzione pixel Triple Whale per canale del giorno (best-effort)."""
+    if not tw_summary:
+        return
+    try:
+        from src.connectors.triplewhale import extract_pixel_attribution
+
+        store.upsert_tw_pixel_daily(day, extract_pixel_attribution(tw_summary))
+    except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
+        print(f"[report] ⚠️ tw_pixel non salvato per {day}: {exc}")
+
+
 def _persist_refunds(store, day: str, orders: list[dict]) -> None:
     """Salva i refund Shopify del giorno (visibilità; best-effort)."""
     try:
@@ -840,7 +862,8 @@ def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, sto
             "range": f"{d0.isoformat()} → {d1.isoformat()}"}
 
 
-def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics) -> None:
+def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics,
+             tw_summary: Optional[dict] = None) -> None:
     """Salva su Supabase se configurato; non blocca il report in caso di assenza DB."""
     try:
         from src.db.supabase_client import SupabaseStore
@@ -852,6 +875,8 @@ def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetri
         _persist_product_units(store, metrics)
         _persist_sales_by_country(store, metrics.day, orders)
         _persist_sales_by_hour(store, metrics.day, orders)
+        _persist_sales_by_source(store, metrics.day, orders)  # last-click (Fase 9)
+        _persist_tw_pixel(store, metrics.day, tw_summary)      # pixel TW per canale (Fase 9)
         _persist_refunds(store, metrics.day, orders)         # refund Shopify (Fase 8)
         _persist_stripe(store, metrics.day)                  # Stripe daily + payout/dispute (Fase 8)
         print(
@@ -928,6 +953,7 @@ def backfill_daily_metrics(
             _persist_product_units(store, m)   # unità vendute per prodotto (Fase 5)
             _persist_sales_by_country(store, w.day_str, orders)   # vendite per paese (Fase 6)
             _persist_sales_by_hour(store, w.day_str, orders)      # vendite per ora (Fase 7)
+            _persist_sales_by_source(store, w.day_str, orders)    # last-click (Fase 9)
             _persist_refunds(store, w.day_str, orders)            # refund Shopify (Fase 8)
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
@@ -1444,6 +1470,33 @@ def aggregate_period(daily_rows: list[dict], store, header=None):
     )
 
 
+def _sources_line(store, start: str, end: str) -> str:
+    """
+    Riga Telegram: prime sorgenti LAST-CLICK del periodo (ordini + revenue + %). Vuota se non
+    ci sono dati. Include il caveat: il last-click sotto-conta gli ads vs le piattaforme.
+    """
+    try:
+        from src.metrics.sales_source import top_sources
+
+        rows = store.get_table_range("orders_by_source_daily", start, end)
+        by: dict[str, dict] = {}
+        for r in rows:
+            s = r.get("source") or "other"
+            acc = by.setdefault(s, {"orders": 0, "revenue": 0.0})
+            acc["orders"] += int(r.get("orders") or 0)
+            acc["revenue"] += float(r.get("revenue") or 0)
+        tops = top_sources(by, 4)
+        if not tops:
+            return ""
+        parts = [f"{t['source']} {t['orders']}·${t['revenue']:,.0f} ({t['pct']:.0f}%)"
+                 for t in tops]
+        return ("\n\n🧭 *Last-click sources* _(order landing; undercounts ads vs platform)_\n"
+                + "  |  ".join(parts))
+    except Exception as exc:  # noqa: BLE001 — riga accessoria, non deve rompere il report
+        print(f"[report] ⚠️ sources line saltata: {exc}")
+        return ""
+
+
 def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
     """Renderizza un report multi-giorno dalle righe daily_metrics fornite (gap-safe)."""
     (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
@@ -1456,10 +1509,11 @@ def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
     kp = load_klaviyo_period(day_strs[0], day_strs[-1])
     if kp.get("ok") and kp.get("daily"):
         klaviyo_daily, klaviyo_campaigns = kp["daily"], kp["campaigns"]
-    return format_report(
+    text = format_report(
         m, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
         tiktok_daily, [], google_daily, breakeven=breakeven, header=header,
     )
+    return text + _sources_line(store, day_strs[0], day_strs[-1])
 
 
 def build_weekly_report(days: int = 7, store=None) -> str:

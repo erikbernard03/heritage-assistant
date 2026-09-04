@@ -283,3 +283,57 @@ def extract_google(summary: dict) -> Optional[dict]:
         "roas": _num(vals.get(GOOGLE_METRIC_IDS["roas"])),  # se 0 -> ricalcolato
         "cpa": cpa,                                          # se 0 -> ricalcolato
     }
+
+
+# --------------------------------------------------------------------------- #
+# Attribuzione PIXEL Triple Whale per canale (second opinion accanto al last-click
+# Shopify e all'auto-attribuzione delle piattaforme).
+#
+# I tile pixel di TW hanno nomi che variano tra account: si prova una lista di alias per
+# canale e si prende il PRIMO metricId presente. Se non c'è nessun tile pixel -> None.
+# Valori già in USD. `orders` = pixelPurchases del canale ; `revenue` = pixel conversion value.
+# --------------------------------------------------------------------------- #
+PIXEL_METRIC_IDS = {
+    "meta": {
+        "orders": ("pixelFacebookPurchases", "facebookPixelPurchases",
+                   "pixel_facebook_purchases", "pixelMetaPurchases"),
+        "revenue": ("pixelFacebookConversionValue", "facebookPixelConversionValue",
+                    "pixel_facebook_conversion_value", "pixelMetaConversionValue"),
+    },
+    "google": {
+        "orders": ("pixelGooglePurchases", "googlePixelPurchases",
+                   "pixel_google_purchases"),
+        "revenue": ("pixelGoogleConversionValue", "googlePixelConversionValue",
+                    "pixel_google_conversion_value"),
+    },
+    "tiktok": {
+        "orders": ("pixelTiktokPurchases", "tiktokPixelPurchases",
+                   "pixel_tiktok_purchases"),
+        "revenue": ("pixelTiktokConversionValue", "tiktokPixelConversionValue",
+                    "pixel_tiktok_conversion_value"),
+    },
+}
+
+
+def _first_present(vals: dict, keys) -> Optional[float]:
+    for k in keys:
+        if k in vals:
+            return _num(vals.get(k))
+    return None
+
+
+def extract_pixel_attribution(summary: dict) -> dict[str, dict]:
+    """
+    {channel: {orders, revenue}} per meta/google/tiktok dai tile pixel di TW (USD).
+    Include SOLO i canali per cui esiste almeno un tile pixel (orders o revenue). Dict vuoto
+    se il Summary non espone metriche pixel per canale.
+    """
+    vals = collect_metric_values(summary)
+    out: dict[str, dict] = {}
+    for channel, ids in PIXEL_METRIC_IDS.items():
+        orders = _first_present(vals, ids["orders"])
+        revenue = _first_present(vals, ids["revenue"])
+        if orders is None and revenue is None:
+            continue
+        out[channel] = {"orders": orders or 0.0, "revenue": revenue or 0.0}
+    return out
