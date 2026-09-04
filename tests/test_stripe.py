@@ -7,6 +7,7 @@ from datetime import datetime
 import pytz
 
 from src.metrics.stripe_metrics import (
+    convert_payouts_usd,
     daily_from_balance_transactions,
     dispute_rate,
     fee_rate,
@@ -14,6 +15,7 @@ from src.metrics.stripe_metrics import (
     reconciliation_row,
     refunds_from_orders,
     refunds_monthly,
+    settlement_to_usd_rate,
     stripe_monthly,
     total_payment_cost_rate,
 )
@@ -38,6 +40,54 @@ def test_daily_from_balance_transactions_gross_fee_net_refund():
     assert round(d["refund_amount"], 2) == 20.0 and d["refund_count"] == 1
     # net = gross − fee − refund = 150 − 4.95 − 20 = 125.05
     assert round(d["net"], 2) == 125.05
+
+
+def test_daily_non_usd_settlement_is_fx_converted():
+    # Account che settla in valuta non-USD (~6.9/USD): amount/fee sono in unità minime della
+    # valuta di settlement, con exchange_rate presentment(USD)->settlement. Il gross deve
+    # tornare in USD, NON essere trattato come cent USD (era il bug ~6-7x).
+    R = 6.9
+    txns = [
+        # charge da $800 USD -> 5520.00 DKK -> 552000 øre ; fee $23.50 -> 16215 øre
+        {"created": _unix("2026-09-02"), "type": "charge", "amount": round(800 * R * 100),
+         "fee": round(23.50 * R * 100), "currency": "dkk", "exchange_rate": R},
+        # refund da $300 USD (negativo)
+        {"created": _unix("2026-09-02"), "type": "refund", "amount": -round(300 * R * 100),
+         "fee": 0, "currency": "dkk", "exchange_rate": R},
+        # rumore che NON deve entrare nel gross
+        {"created": _unix("2026-09-02"), "type": "payout", "amount": -round(1500 * R * 100),
+         "fee": 0, "currency": "dkk", "exchange_rate": None},
+        {"created": _unix("2026-09-02"), "type": "stripe_fee", "amount": -round(12 * R * 100),
+         "fee": 0, "currency": "dkk", "exchange_rate": None},
+    ]
+    d = daily_from_balance_transactions(txns)["2026-09-02"]
+    assert round(d["gross"], 2) == 800.0           # non 5520 (era il valore gonfiato)
+    assert round(d["fee"], 2) == 23.5
+    assert round(d["refund_amount"], 2) == 300.0 and d["refund_count"] == 1
+    assert d["charge_count"] == 1                   # payout/stripe_fee esclusi
+    assert round(d["net"], 2) == round(800 - 23.5 - 300, 2)
+
+
+def test_settlement_rate_and_payout_conversion():
+    R = 6.9
+    txns = [{"created": _unix("2026-09-02"), "type": "charge", "amount": round(800 * R * 100),
+             "fee": round(23.50 * R * 100), "currency": "dkk", "exchange_rate": R}]
+    rate = settlement_to_usd_rate(txns)             # USD per 1 DKK ≈ 1/6.9
+    assert round(rate, 5) == round(1 / R, 5)
+    # payout di 6900.00 DKK -> $1000 USD
+    conv = convert_payouts_usd([{"amount": 6900.0, "currency": "dkk", "status": "paid"}], rate)
+    assert round(conv[0]["amount"], 2) == 1000.0
+    # payout già in USD: invariato
+    same = convert_payouts_usd([{"amount": 1234.0, "currency": "usd"}], rate)
+    assert same[0]["amount"] == 1234.0
+
+
+def test_daily_usd_account_unchanged():
+    # Account USD (nessuna currency/exchange_rate): comportamento invariato, /100.
+    txns = [{"created": _unix("2026-09-02"), "type": "charge", "amount": 10000, "fee": 320}]
+    d = daily_from_balance_transactions(txns)["2026-09-02"]
+    assert round(d["gross"], 2) == 100.0 and round(d["fee"], 2) == 3.20
+    assert settlement_to_usd_rate(txns) == 1.0
 
 
 def test_daily_buckets_by_rome_day():

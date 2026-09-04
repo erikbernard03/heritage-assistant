@@ -425,8 +425,10 @@ def stripe_diagnostic() -> str:
 
     from src.connectors.stripe_conn import StripeConnector
     from src.metrics.stripe_metrics import (
+        convert_payouts_usd,
         daily_from_balance_transactions,
         dispute_rate,
+        settlement_to_usd_rate,
         total_payment_cost_rate,
     )
 
@@ -439,6 +441,22 @@ def stripe_diagnostic() -> str:
     tz = pytz.timezone(settings.TIMEZONE)
     today = datetime.now(tz).date()
     yday = today - timedelta(days=1)
+
+    # Finestra 35g per il tasso di cambio effettivo (settlement → USD) e la valuta di settlement.
+    settle_rate = 1.0
+    settle_cur = "usd"
+    try:
+        win = sc.balance_transactions(today - timedelta(days=35), today)
+        settle_rate = settlement_to_usd_rate(win)
+        curs = {str(t.get("currency") or "usd").lower() for t in win
+                if str(t.get("type") or "").lower() in ("charge", "payment")}
+        if curs:
+            settle_cur = sorted(curs)[0]
+        out.append(f"Settlement currency: {settle_cur.upper()} · "
+                   f"effective rate → USD {settle_rate:.5f}"
+                   + ("  (USD account — no conversion)" if settle_cur == "usd" else ""))
+    except Exception:  # noqa: BLE001
+        pass
 
     out.append(f"\n— Yesterday {yday.isoformat()} —")
     try:
@@ -467,7 +485,8 @@ def stripe_diagnostic() -> str:
 
     out.append("\n— Recent payouts (last 35 days) —")
     try:
-        pays = sc.payouts(today - timedelta(days=35), today + timedelta(days=7))
+        pays = convert_payouts_usd(
+            sc.payouts(today - timedelta(days=35), today + timedelta(days=7)), settle_rate)
         for p in sorted(pays, key=lambda x: x.get("arrival_date") or "", reverse=True)[:5]:
             out.append(f"  {p.get('arrival_date')}: ${float(p.get('amount') or 0):,.2f} "
                        f"· {p.get('status')}")

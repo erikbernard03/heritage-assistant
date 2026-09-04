@@ -48,7 +48,12 @@ class StripeConnector:
     def balance_transactions(self, start: date, end: date) -> list[dict]:
         """
         Balance transactions con created in [start, end] (end incluso). Grezze: created, type,
-        amount(cent), fee(cent). Include charge/payment/refund e altri tipi (filtrati a valle).
+        reporting_category, amount(cent), fee(cent), currency, exchange_rate.
+
+        IMPORTANTE: amount/fee sono nell'unità minima della valuta di SETTLEMENT dell'account
+        (NON necessariamente USD). `currency` ed `exchange_rate` servono a riportarli in USD a
+        valle (src/metrics/stripe_metrics). Include charge/payment/refund e altri tipi (payout,
+        transfer, topup, stripe_fee...) che vengono filtrati nel bucketing.
         """
         gte = self._unix(start)
         lt = self._unix(end) + 86400          # end incluso -> < giorno dopo
@@ -58,11 +63,18 @@ class StripeConnector:
         )
         for bt in it.auto_paging_iter():
             out.append({"created": bt.get("created"), "type": bt.get("type"),
-                        "amount": bt.get("amount"), "fee": bt.get("fee")})
+                        "reporting_category": bt.get("reporting_category"),
+                        "amount": bt.get("amount"), "fee": bt.get("fee"),
+                        "currency": bt.get("currency"),
+                        "exchange_rate": bt.get("exchange_rate")})
         return out
 
     def payouts(self, start: date, end: date) -> list[dict]:
-        """Payout con arrival_date in [start, end]. Normalizzati (USD, date ISO)."""
+        """
+        Payout con arrival_date in [start, end]. `amount` in unità MAGGIORI della valuta di
+        settlement (NON convertito in USD qui): la conversione avviene a valle con il tasso
+        effettivo ricavato dalle balance transactions (i payout non hanno un exchange_rate).
+        """
         gte = self._unix(start)
         lt = self._unix(end) + 86400
         out: list[dict] = []
@@ -72,6 +84,7 @@ class StripeConnector:
                 "id": p.get("id"),
                 "arrival_date": _iso_date(p.get("arrival_date")),
                 "amount": (float(p.get("amount") or 0) / 100.0),
+                "currency": (p.get("currency") or "usd"),
                 "status": p.get("status"),
                 "created": _iso_date(p.get("created")),
             })

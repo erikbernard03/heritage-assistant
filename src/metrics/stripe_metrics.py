@@ -33,6 +33,34 @@ def _rome_day(created_unix, tz) -> str:
     return datetime.fromtimestamp(int(created_unix), tz).date().isoformat()
 
 
+# Tipi di balance transaction che rappresentano VENDITE (entrano nel gross) e RIMBORSI.
+# Tutto il resto (payout, transfer, topup, stripe_fee, adjustment, application_fee,
+# payout_cancel, payout_failure...) è MOVIMENTO DI CASSA e NON deve entrare nel gross:
+# altrimenti il lordo si gonfia (es. contare i payout raddoppierebbe/triplicherebbe i numeri).
+_GROSS_TYPES = ("charge", "payment")
+_REFUND_TYPES = ("refund", "payment_refund", "refund_failure")
+
+
+def _usd(amount_cents, currency, exchange_rate) -> float:
+    """
+    Converte un importo Stripe (nell'unità minima della valuta di SETTLEMENT dell'account) in
+    USD. Se la valuta di settlement è USD -> semplice centesimi→dollari. Altrimenti divide per
+    l'`exchange_rate` della balance transaction (tasso presentment→settlement): assumendo che il
+    cliente paghi in USD (store USD), l'importo in settlement ÷ exchange_rate torna in USD.
+
+    Questo è il fix del bug per cui gli importi in valuta non-USD venivano trattati come cent USD
+    e gonfiati di ~6-7× (artefatto di cambio).
+    """
+    major = _cents(amount_cents)                       # unità maggiori della valuta di settlement
+    cur = (currency or "usd").lower()
+    if cur == "usd":
+        return major
+    er = _f(exchange_rate)
+    if er > 0:
+        return major / er                              # settlement -> USD (presentment)
+    return major                                       # nessun tasso: lasciato grezzo (segnalato a monte)
+
+
 # --------------------------------------------------------------------------- #
 # Stripe balance transactions -> daily
 # --------------------------------------------------------------------------- #
@@ -40,11 +68,13 @@ def daily_from_balance_transactions(
     txns: list[dict], tz_name: Optional[str] = None
 ) -> dict[str, dict]:
     """
-    {giorno Europe/Rome: {gross, fee, net, charge_count, refund_amount, refund_count}} (USD).
-    `txns`: balance transactions grezze (campi created[unix], type, amount, fee — in centesimi).
+    {giorno Europe/Rome: {gross, fee, net, charge_count, refund_amount, refund_count}} in USD.
+    `txns`: balance transactions grezze (created[unix], type, amount, fee — in centesimi della
+    valuta di settlement — più currency ed exchange_rate).
 
-    gross = Σ importi charge/payment ; fee = Σ fee (charge+refund) ; refund = Σ |importo refund| ;
-    net = gross − fee − refund. I tipi diversi (payout, adjustment) non entrano nel gross.
+    gross = Σ importi dei SOLI tipi charge/payment (convertiti in USD) ; fee = Σ fee di quelle
+    transazioni ; refund = Σ |importo refund| ; net = gross − fee − refund. Ogni altro tipo
+    (payout/transfer/topup/stripe_fee/adjustment...) è IGNORATO.
     """
     tz = pytz.timezone(tz_name or settings.TIMEZONE)
     out: dict[str, dict] = {}
@@ -54,19 +84,56 @@ def daily_from_balance_transactions(
         day = _rome_day(t["created"], tz)
         acc = out.setdefault(day, {"gross": 0.0, "fee": 0.0, "net": 0.0,
                                    "charge_count": 0, "refund_amount": 0.0, "refund_count": 0})
-        typ = t.get("type")
-        amount = _cents(t.get("amount"))
-        fee = _cents(t.get("fee"))
-        if typ in ("charge", "payment"):
-            acc["gross"] += amount
-            acc["fee"] += fee
+        typ = str(t.get("type") or "").lower()
+        cur = t.get("currency")
+        er = t.get("exchange_rate")
+        if typ in _GROSS_TYPES:
+            acc["gross"] += _usd(t.get("amount"), cur, er)
+            acc["fee"] += _usd(t.get("fee"), cur, er)
             acc["charge_count"] += 1
-        elif typ in ("refund", "payment_refund"):
-            acc["refund_amount"] += -amount            # importo refund è negativo
-            acc["fee"] += fee                          # eventuale fee reversal (di norma 0)
+        elif typ in _REFUND_TYPES:
+            acc["refund_amount"] += -_usd(t.get("amount"), cur, er)   # importo refund è negativo
+            acc["fee"] += _usd(t.get("fee"), cur, er)                 # eventuale fee reversal (di norma 0)
             acc["refund_count"] += 1
+        # altri tipi -> movimento di cassa, ignorati
     for acc in out.values():
         acc["net"] = acc["gross"] - acc["fee"] - acc["refund_amount"]
+    return out
+
+
+def settlement_to_usd_rate(txns: list[dict]) -> float:
+    """
+    Tasso effettivo (valuta di settlement → USD) ricavato dai balance transaction di vendita del
+    periodo: Σ(USD) / Σ(importo in valuta di settlement). Serve per convertire i PAYOUT, che non
+    espongono un exchange_rate proprio. Ritorna 1.0 se già in USD o dati insufficienti.
+    """
+    num = 0.0  # USD
+    den = 0.0  # settlement (major)
+    for t in txns:
+        typ = str(t.get("type") or "").lower()
+        if typ not in _GROSS_TYPES and typ not in _REFUND_TYPES:
+            continue
+        major = abs(_cents(t.get("amount")))
+        if major == 0:
+            continue
+        den += major
+        num += abs(_usd(t.get("amount"), t.get("currency"), t.get("exchange_rate")))
+    return (num / den) if den > 0 else 1.0
+
+
+def convert_payouts_usd(payouts: list[dict], rate: float) -> list[dict]:
+    """
+    Converte gli importi dei payout in USD. `amount` in ingresso è in unità MAGGIORI della valuta
+    di settlement; `rate` = USD per 1 unità di settlement (da settlement_to_usd_rate). I payout
+    già in USD restano invariati.
+    """
+    out: list[dict] = []
+    for p in payouts:
+        cur = str(p.get("currency") or "usd").lower()
+        amt = _f(p.get("amount"))
+        q = dict(p)
+        q["amount"] = amt if cur == "usd" else amt * _f(rate)
+        out.append(q)
     return out
 
 

@@ -779,13 +779,21 @@ def _persist_stripe(store, day: str) -> None:
         return
     try:
         from src.connectors.stripe_conn import StripeConnector
-        from src.metrics.stripe_metrics import daily_from_balance_transactions
+        from src.metrics.stripe_metrics import (
+            convert_payouts_usd,
+            daily_from_balance_transactions,
+            settlement_to_usd_rate,
+        )
 
         d = date.fromisoformat(day)
         sc = StripeConnector()
-        agg = daily_from_balance_transactions(sc.balance_transactions(d, d))
+        # Finestra 35g: serve sia per il tasso di cambio effettivo sia per i payout.
+        txns = sc.balance_transactions(d - timedelta(days=35), d)
+        agg = daily_from_balance_transactions(txns)
         store.upsert_stripe_daily(day, agg.get(day, {}))
-        store.upsert_stripe_payouts(sc.payouts(d - timedelta(days=35), d + timedelta(days=7)))
+        rate = settlement_to_usd_rate(txns)
+        payouts = convert_payouts_usd(sc.payouts(d - timedelta(days=35), d + timedelta(days=7)), rate)
+        store.upsert_stripe_payouts(payouts)
         store.upsert_stripe_disputes(sc.disputes(d - timedelta(days=120), d))
     except Exception as exc:  # noqa: BLE001
         print(f"[report] ⚠️ Stripe sync saltato per {day}: {exc}")
@@ -798,7 +806,11 @@ def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, sto
     """
     from src.connectors.stripe_conn import StripeConnector
     from src.db.supabase_client import SupabaseStore
-    from src.metrics.stripe_metrics import daily_from_balance_transactions
+    from src.metrics.stripe_metrics import (
+        convert_payouts_usd,
+        daily_from_balance_transactions,
+        settlement_to_usd_rate,
+    )
 
     if not settings.STRIPE_API_KEY:
         raise RuntimeError("STRIPE_API_KEY non configurata.")
@@ -812,14 +824,17 @@ def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, sto
     sc = StripeConnector()
     store = store or SupabaseStore()
     # Una sola pull balance-transactions per l'intero range, poi bucketing per giorno.
-    by_day = daily_from_balance_transactions(sc.balance_transactions(d0, d1))
+    txns = sc.balance_transactions(d0, d1)
+    by_day = daily_from_balance_transactions(txns)
+    rate = settlement_to_usd_rate(txns)
     days = 0
     cur = d0
     while cur <= d1:
         store.upsert_stripe_daily(cur.isoformat(), by_day.get(cur.isoformat(), {}))
         days += 1
         cur += timedelta(days=1)
-    n_pay = store.upsert_stripe_payouts(sc.payouts(d0 - timedelta(days=7), d1 + timedelta(days=14)))
+    n_pay = store.upsert_stripe_payouts(
+        convert_payouts_usd(sc.payouts(d0 - timedelta(days=7), d1 + timedelta(days=14)), rate))
     n_dis = store.upsert_stripe_disputes(sc.disputes(d0, d1 + timedelta(days=1)))
     return {"days": days, "payouts": n_pay, "disputes": n_dis,
             "range": f"{d0.isoformat()} → {d1.isoformat()}"}
