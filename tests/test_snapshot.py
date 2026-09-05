@@ -70,8 +70,8 @@ def test_snapshot_math_and_layout():
     # net netto = 100.75 − 203.90(fixed) = −103.15
     assert "net *$-103.15*" in text
     # break-even dal giorno stesso: 75/50.375 = 1.49x ; CPA $50.38
-    assert "⚖️ Contribution break-even ROAS: 1.49x · CPA: $50.38 (own day)" in text
-    assert "🎯 Profit break-even ROAS:" in text
+    assert "⚖️ Break-even ROAS: 1.49x · CPA: $50.38 (own day)" in text
+    assert "Profit break-even" not in text
     # sezioni + nota provvisoria
     assert "*2) COST BREAKDOWN*" in text
     assert "Fixed-costs allocation (full day): −$203.90" in text
@@ -85,7 +85,7 @@ def test_snapshot_zero_orders_shows_na_and_no_provisional_note():
     assert "🛒 Orders: *0*" in text
     assert "🧾 AOV: $0.00" in text
     assert "📦 Gross profit (rev − COGS): *$0.00*" in text
-    assert "⚖️ Contribution break-even ROAS: n/a · CPA: n/a (own day)" in text
+    assert "⚖️ Break-even ROAS: n/a · CPA: n/a (own day)" in text
     assert "_No ad-platform data yet._" in text
     assert "provisional" not in text          # nessuna nota per ieri
 

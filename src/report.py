@@ -260,10 +260,7 @@ def format_snapshot(
     )
     c_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
     c_cpa = f"${be['cpa']:,.2f}" if be.get("cpa") is not None else "n/a"
-    p_roas = f"{be['profit_roas']:,.2f}x" if be.get("profit_roas") else "n/a"
-    p_cpa = f"${be['profit_cpa']:,.2f}" if be.get("profit_cpa") is not None else "n/a"
-    out.append(f"⚖️ Contribution break-even ROAS: {c_roas} · CPA: {c_cpa} (own day)")
-    out.append(f"🎯 Profit break-even ROAS: {p_roas} · CPA: {p_cpa} (incl. fixed; volume-dependent)")
+    out.append(f"⚖️ Break-even ROAS: {c_roas} · CPA: {c_cpa} (own day)")
     prov = " · provisional" if provisional else ""
     for line in (
         _roas_cpa_line("📣", "Meta", g.meta_daily),
@@ -1024,21 +1021,14 @@ def _fmt_cvr(cvr_fraction: Optional[float]) -> str:
 
 def _breakeven_line(breakeven) -> str:
     """
-    Righe break-even (finestra 4 giorni, totali POOLED):
-      - CONTRIBUTION break-even (esclude i costi fissi)
-      - PROFIT break-even (include la quota fissa/ordine; dipende dal VOLUME ordini)
-    'n/a' se non calcolabile.
+    Riga break-even (finestra 4 giorni, totali POOLED) — solo CONTRIBUTION (esclude i costi
+    fissi). Il profit break-even resta nelle card mensili della dashboard. 'n/a' se non
+    calcolabile.
     """
     be = breakeven or {}
     c_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
     c_cpa = f"${be['cpa']:,.2f}" if be.get("cpa") is not None else "n/a"
-    p_roas = f"{be['profit_roas']:,.2f}x" if be.get("profit_roas") else "n/a"
-    p_cpa = f"${be['profit_cpa']:,.2f}" if be.get("profit_cpa") is not None else "n/a"
-    return (
-        f"⚖️ Contribution break-even ROAS: {c_roas} · CPA: {c_cpa} (4-day pooled)\n"
-        f"🎯 Profit break-even ROAS: {p_roas} · CPA: {p_cpa} "
-        f"_(incl. fixed cost/order; depends on order volume)_"
-    )
+    return f"⚖️ Break-even ROAS: {c_roas} · Break-even CPA: {c_cpa} (4-day pooled)"
 
 
 def _margin_line(m: DailyMetrics) -> str:
