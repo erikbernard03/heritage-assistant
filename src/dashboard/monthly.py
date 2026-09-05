@@ -235,12 +235,16 @@ def gross_and_blended(revenue: float, cogs: float,
     return gross, blended
 
 
-def month_unit_economics(revenue: float, cogs: float, orders: int) -> dict:
+def month_unit_economics(revenue: float, cogs: float, orders: int,
+                         day_strs: list[str] | None = None) -> dict:
     """
     Economia unitaria del mese dai SUOI totali:
-      - gross_per_order = (revenue − COGS) ÷ ordini
-      - break-even CPA  = AOV − COGS/ordine − 7.5%·AOV − $7  (max spesa ads per ordine)
-      - break-even ROAS = AOV ÷ break-even CPA
+      - gross_per_order   = (revenue − COGS) ÷ ordini
+      - CONTRIBUTION break-even CPA = AOV − COGS/ordine − 7.5%·AOV − $7 (esclude i costi fissi)
+      - CONTRIBUTION break-even ROAS = AOV ÷ CPA
+      - PROFIT break-even = contribution CPA − quota fissa/ordine, dove quota fissa/ordine =
+        Σ quota giornaliera DATATA del mese (da FIXED_COSTS_SCHEDULE, via `day_strs`) ÷ ordini.
+        Dipende dal volume ordini del mese.
     Riusa compute_breakeven (stessa formula del report). None se 0 ordini / margine ≤ 0.
     """
     from src.metrics.profit import compute_breakeven
@@ -248,15 +252,24 @@ def month_unit_economics(revenue: float, cogs: float, orders: int) -> dict:
     orders = int(orders or 0)
     if orders <= 0:
         return {"gross_per_order": None, "be_roas": None, "be_cpa": None,
-                "aov": None, "cogs_per_order": None}
+                "aov": None, "cogs_per_order": None,
+                "profit_be_roas": None, "profit_be_cpa": None, "fixed_per_order": None}
     aov = _f(revenue) / orders
     cogs_per_order = _f(cogs) / orders
     gross_per_order = (_f(revenue) - _f(cogs)) / orders
     be_roas, be_cpa = compute_breakeven(
         [{"revenue": _f(revenue), "num_orders": orders, "cogs_total": _f(cogs)}]
     )
+    # PROFIT break-even con la quota fissa DATATA del mese (Σ giornaliere ÷ ordini).
+    profit_be_cpa = profit_be_roas = fixed_per_order = None
+    if be_cpa is not None and day_strs:
+        fixed_per_order = fixed_alloc_for_month(day_strs) / orders
+        profit_be_cpa = be_cpa - fixed_per_order
+        profit_be_roas = (aov / profit_be_cpa) if profit_be_cpa > 0 else None
     return {"gross_per_order": gross_per_order, "be_roas": be_roas, "be_cpa": be_cpa,
-            "aov": aov, "cogs_per_order": cogs_per_order}
+            "aov": aov, "cogs_per_order": cogs_per_order,
+            "profit_be_roas": profit_be_roas, "profit_be_cpa": profit_be_cpa,
+            "fixed_per_order": fixed_per_order}
 
 
 _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

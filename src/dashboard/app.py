@@ -799,17 +799,25 @@ def _render_unit_economics(months: list[dict]) -> None:
     if not months:
         return
     st.subheader("💰 How much I can spend on ads")
-    st.caption("Per month, from that month's own totals: break-even CPA (max you can pay for "
-               "ads per order) and break-even ROAS.")
+    st.caption("Per month, from that month's own totals and that month's dated fixed allocation. "
+               "**Contribution** break-even excludes fixed costs (max ad $/order to cover variable "
+               "costs); **Profit** break-even also covers the fixed-cost share per order and so "
+               "depends on the month's order volume.")
     for r in sorted(months, key=lambda x: x["month"], reverse=True):
-        u = month_unit_economics(r["revenue"], r["cogs_total"], r["orders"])
+        u = month_unit_economics(r["revenue"], r["cogs_total"], r["orders"],
+                                 day_strs=r.get("day_strs") or [])
         st.markdown(f"**{month_label(r['month'])}**"
                     + (" _(partial)_" if r.get("partial") else ""))
         c1, c2 = st.columns(2)
-        c1.metric("Break-even CPA (max ad $/order)",
+        c1.metric("Contribution break-even CPA (max ad $/order)",
                   _usd(u["be_cpa"]) if u["be_cpa"] is not None else "n/a")
-        c2.metric("Break-even ROAS",
+        c2.metric("Contribution break-even ROAS",
                   f"{u['be_roas']:,.2f}x" if u["be_roas"] else "n/a")
+        c3, c4 = st.columns(2)
+        c3.metric("Profit break-even CPA (incl. fixed/order)",
+                  _usd(u["profit_be_cpa"]) if u["profit_be_cpa"] is not None else "n/a")
+        c4.metric("Profit break-even ROAS",
+                  f"{u['profit_be_roas']:,.2f}x" if u["profit_be_roas"] else "n/a")
 
 
 def _render_cost_breakdown_monthly(months: list[dict]) -> None:
@@ -831,8 +839,10 @@ def _render_cost_breakdown_monthly(months: list[dict]) -> None:
             "Fixed allocation": round(fixed, 2),
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    st.caption("Fixed allocation uses the monthly fixed cost in force at each day "
-               "($5,668 → $7,666 from 2026-06-11 → $6,117 from 2026-08-02), ÷30 per day.")
+    from src.metrics.fixed_costs import schedule_caption
+
+    st.caption("Fixed allocation uses the monthly fixed cost in force at each day: "
+               + schedule_caption())
 
 
 def _render_sales_by_location(sales_by_month: dict) -> None:

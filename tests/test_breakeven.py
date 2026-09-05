@@ -2,7 +2,8 @@
 Break-even CONTRIBUTION + PROFIT (pooled), quota costi fissi datata e riconciliazione
 del net di Sep 4. Deterministico, nessuna rete.
 """
-from src.metrics.fixed_costs import daily_fixed_allocation
+from config import settings
+from src.metrics.fixed_costs import daily_fixed_allocation, schedule_caption
 from src.metrics.profit import (
     compute_breakeven,
     compute_breakeven_full,
@@ -88,6 +89,32 @@ def test_dated_fixed_allocation_new_september_entry():
     # la storia resta invariata
     assert round(daily_fixed_allocation("2026-08-31"), 2) == round(6117 / 30, 2)   # 203.90
     assert round(daily_fixed_allocation("2026-06-15"), 2) == round(7666 / 30, 2)   # 255.53
+
+
+def test_schedule_caption_generated_from_config_not_stale():
+    cap = schedule_caption()
+    # ogni voce della schedule DEVE comparire (generata dal config, mai hardcoded)
+    for entry in settings.FIXED_COSTS_SCHEDULE:
+        if entry["from"] != "2000-01-01":       # la baseline non mostra la data
+            assert str(entry["from"]) in cap
+    assert "$12,135.77" in cap and "2026-09-01" in cap   # nuova voce settembre
+    assert "$5,668" in cap and "÷30 per day" in cap
+
+
+def test_month_unit_economics_profit_breakeven_uses_dated_fixed():
+    from src.dashboard.monthly import month_unit_economics
+
+    days = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]
+    u = month_unit_economics(revenue=11637.11, cogs=2407.21, orders=106, day_strs=days)
+    # contribution invariato
+    assert round(u["be_cpa"], 2) == 71.84 and round(u["be_roas"], 2) == 1.53
+    # profit: quota fissa/ordine = 4×404.5257 ÷ 106 = 15.27 -> CPA 56.58, ROAS 1.94
+    assert round(u["profit_be_cpa"], 2) == 56.58
+    assert round(u["profit_be_roas"], 2) == 1.94
+    assert u["profit_be_cpa"] < u["be_cpa"]
+    # senza day_strs il profit break-even non è calcolabile (None)
+    u2 = month_unit_economics(11637.11, 2407.21, 106)
+    assert u2["profit_be_cpa"] is None and u2["be_cpa"] is not None
 
 
 def test_sep4_net_and_margin_with_new_fixed():
