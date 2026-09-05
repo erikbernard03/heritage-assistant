@@ -74,7 +74,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     try:
         # build_daily_report fa I/O di rete bloccante: lo eseguo in un thread
         _, text = await asyncio.to_thread(build_daily_report)
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nella generazione del report")
         await msg.edit_text(f"❌ Report error: {exc}")
@@ -88,7 +88,7 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = await update.message.reply_text("⏳ Pulling today so far (live)…")
     try:
         text = await asyncio.to_thread(build_today_snapshot)
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nello snapshot /today")
         await msg.edit_text(f"❌ Today error: {exc}")
@@ -102,7 +102,7 @@ async def cmd_yesterday(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = await update.message.reply_text("⏳ Pulling yesterday (live)…")
     try:
         text = await asyncio.to_thread(build_yesterday_snapshot)
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nello snapshot /yesterday")
         await msg.edit_text(f"❌ Yesterday error: {exc}")
@@ -116,12 +116,7 @@ async def cmd_report7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     msg = await update.message.reply_text("⏳ Building the 7-day report…")
     try:
         text = await asyncio.to_thread(build_weekly_report)
-        try:
-            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:  # noqa: BLE001 — troppo lungo / markdown
-            await msg.edit_text(text[:3800])
-            if len(text) > 3800:
-                await _send_chunks(update.message, text[3800:])
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel report 7 giorni")
         await msg.edit_text(f"❌ 7-day report error: {exc}")
@@ -135,12 +130,7 @@ async def cmd_report5(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     msg = await update.message.reply_text("⏳ Building the 5-day report…")
     try:
         text = await asyncio.to_thread(build_weekly_report, 5)
-        try:
-            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:  # noqa: BLE001
-            await msg.edit_text(text[:3800])
-            if len(text) > 3800:
-                await _send_chunks(update.message, text[3800:])
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel report 5 giorni")
         await msg.edit_text(f"❌ 5-day report error: {exc}")
@@ -154,12 +144,7 @@ async def cmd_reportmonth(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     msg = await update.message.reply_text("⏳ Building the month-to-date report…")
     try:
         text = await asyncio.to_thread(build_month_report)
-        try:
-            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:  # noqa: BLE001 — troppo lungo / markdown
-            await msg.edit_text(text[:3800])
-            if len(text) > 3800:
-                await _send_chunks(update.message, text[3800:])
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel report mensile (month-to-date)")
         await msg.edit_text(f"❌ Month-to-date report error: {exc}")
@@ -173,12 +158,7 @@ async def cmd_reportlastmonth(update: Update, context: ContextTypes.DEFAULT_TYPE
     msg = await update.message.reply_text("⏳ Building the last-month report…")
     try:
         text = await asyncio.to_thread(build_last_month_report)
-        try:
-            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:  # noqa: BLE001 — troppo lungo / markdown
-            await msg.edit_text(text[:3800])
-            if len(text) > 3800:
-                await _send_chunks(update.message, text[3800:])
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel report mese precedente")
         await msg.edit_text(f"❌ Last-month report error: {exc}")
@@ -201,7 +181,7 @@ async def cmd_pl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = await update.message.reply_text(f"⏳ Computing the {year}-{month:02d} P&L…")
     try:
         text = await asyncio.to_thread(build_monthly_pl, year, month)
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel P&L mensile")
         await msg.edit_text(f"❌ P&L error: {exc}")
@@ -212,6 +192,33 @@ async def _send_chunks(message, text: str) -> None:
     chunk = 3800
     for i in range(0, len(text), chunk):
         await message.reply_text(text[i : i + chunk])
+
+
+def _strip_md(text: str) -> str:
+    """Rimuove i marcatori Markdown v1 (bold/italic) per il fallback in plain text:
+    così, se il parsing Markdown fallisce, l'utente NON vede asterischi/underscore grezzi."""
+    return text.replace("*", "").replace("_", "")
+
+
+async def _edit_report(msg, text: str, message=None) -> None:
+    """
+    Editor UNICO per i report: prova SEMPRE Markdown; se il parsing fallisce (es. un carattere
+    speciale nel contenuto), ripiega su plain text SENZA marcatori (niente asterischi visibili),
+    con chunking per i messaggi lunghi. Usato da tutti i comandi report per coerenza del rendering.
+    """
+    if len(text) <= 4096:
+        try:
+            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+            return
+        except Exception:  # noqa: BLE001 — markdown non valido -> plain senza marcatori
+            plain = _strip_md(text)
+            await msg.edit_text(plain[:4096])
+            return
+    # messaggio lungo: prima parte in-place, resto in chunk (plain, senza marcatori)
+    plain = _strip_md(text)
+    await msg.edit_text(plain[:3800])
+    if message is not None and len(plain) > 3800:
+        await _send_chunks(message, plain[3800:])
 
 
 async def cmd_klaviyo_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -367,12 +374,7 @@ async def cmd_refresh_today(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         from src.report import refresh_today_and_yesterday
 
         text = await asyncio.to_thread(refresh_today_and_yesterday)
-        try:
-            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-        except Exception:  # noqa: BLE001 — troppo lungo o markdown non valido
-            await msg.edit_text(text[:3800])
-            if len(text) > 3800:
-                await _send_chunks(update.message, text[3800:])
+        await _edit_report(msg, text, update.message)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel refresh_today")
         await msg.edit_text(f"❌ Refresh error: {exc}")

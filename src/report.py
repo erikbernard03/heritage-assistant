@@ -1509,6 +1509,29 @@ def aggregate_period(daily_rows: list[dict], store, header=None):
     )
 
 
+_SOURCE_LABELS_MD = {
+    "meta": "Meta", "google_paid": "Google paid", "google_organic": "Google organic",
+    "email": "Email", "direct": "Direct", "tiktok": "TikTok", "pinterest": "Pinterest",
+}
+
+
+def _source_label_md(source: str) -> str:
+    """
+    Etichetta sorgente SICURA per Markdown v1: i bucket con underscore (google_paid,
+    google_organic) romperebbero il parsing (italic non bilanciato) facendo cadere TUTTO il
+    messaggio in plain text (asterischi visibili). Mappa i bucket noti a label pulite e neutralizza
+    i caratteri speciali Markdown (underscore, asterisco, parentesi quadre, backtick) per gli
+    sconosciuti (stringhe grezze).
+    """
+    lbl = _SOURCE_LABELS_MD.get(source)
+    if lbl:
+        return lbl
+    safe = str(source or "other")
+    for ch in "_*[]`":
+        safe = safe.replace(ch, " ")
+    return safe.strip() or "other"
+
+
 def _sources_line(store, start: str, end: str) -> str:
     """
     Riga Telegram: prime sorgenti LAST-CLICK del periodo (ordini + revenue + %). Vuota se non
@@ -1527,8 +1550,8 @@ def _sources_line(store, start: str, end: str) -> str:
         tops = top_sources(by, 4)
         if not tops:
             return ""
-        parts = [f"{t['source']} {t['orders']}·${t['revenue']:,.0f} ({t['pct']:.0f}%)"
-                 for t in tops]
+        parts = [f"{_source_label_md(t['source'])} {t['orders']}·${t['revenue']:,.0f} "
+                 f"({t['pct']:.0f}%)" for t in tops]
         return ("\n\n🧭 *Last-click sources* _(order landing; undercounts ads vs platform)_\n"
                 + "  |  ".join(parts))
     except Exception as exc:  # noqa: BLE001 — riga accessoria, non deve rompere il report
