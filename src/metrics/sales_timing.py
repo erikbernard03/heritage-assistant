@@ -10,6 +10,7 @@ from datetime import datetime
 import pytz
 
 from config import settings
+from src.metrics.profit import order_revenue
 
 
 def _to_float(value) -> float:
@@ -48,7 +49,7 @@ def revenue_by_hour(orders: list[dict], tz_name: str | None = None) -> dict[int,
             continue
         hour = dt.astimezone(tz).hour
         acc = out.setdefault(hour, {"revenue": 0.0, "orders": 0})
-        acc["revenue"] += _to_float(o.get("total_price"))
+        acc["revenue"] += order_revenue(o)
         acc["orders"] += 1
     return out
 

@@ -30,6 +30,19 @@ def _to_float(value) -> float:
         return 0.0
 
 
+def order_revenue(order: dict) -> float:
+    """
+    Revenue di un ordine = `current_total_price` (totale ATTUALE, già al netto dei rimborsi
+    dell'ordine stesso), datato sul GIORNO DELL'ORDINE. È la nostra definizione stabilita:
+    contabilità per data-ordine, NON per data-rimborso. Fallback a `total_price` (lordo) solo
+    se `current_total_price` è assente (API vecchia).
+    """
+    v = order.get("current_total_price")
+    if v in (None, ""):
+        v = order.get("total_price")
+    return _to_float(v)
+
+
 def _is_cancelled(order: dict) -> bool:
     return bool(order.get("cancelled_at"))
 
@@ -136,7 +149,8 @@ def compute_daily_metrics(
             continue
 
         order_id = int(order.get("id", 0))
-        revenue = _to_float(order.get("total_price"))
+        # Revenue = current_total_price (netto dei rimborsi propri, datato sull'ordine).
+        revenue = order_revenue(order)
         m.revenue += revenue
         # spedizione + IVA sono GIÀ dentro total_price: le separiamo solo per mostrarle
         m.shipping_collected += _order_shipping_collected(order)

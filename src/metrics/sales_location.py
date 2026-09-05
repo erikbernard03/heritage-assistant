@@ -7,6 +7,8 @@ Gli ordini cancellati sono esclusi.
 """
 from __future__ import annotations
 
+from src.metrics.profit import order_revenue
+
 
 def _to_float(value) -> float:
     try:
@@ -36,7 +38,7 @@ def revenue_by_country(orders: list[dict]) -> dict[str, dict]:
             continue
         c = country_of(o)
         acc = out.setdefault(c, {"revenue": 0.0, "orders": 0})
-        acc["revenue"] += _to_float(o.get("total_price"))
+        acc["revenue"] += order_revenue(o)
         acc["orders"] += 1
     return out
 

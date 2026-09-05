@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from urllib.parse import parse_qs, urlparse
 
+from src.metrics.profit import order_revenue
+
 # Bucket canonici (tutto il resto è "other" con stringa grezza conservata).
 CANONICAL_SOURCES = (
     "meta", "google_paid", "google_organic", "tiktok", "pinterest", "email", "direct",
@@ -164,7 +166,7 @@ def revenue_by_source(orders: list[dict]) -> dict[str, dict]:
             continue
         s = classify_order(o)
         acc = out.setdefault(s, {"revenue": 0.0, "orders": 0})
-        acc["revenue"] += _to_float(o.get("total_price"))
+        acc["revenue"] += order_revenue(o)
         acc["orders"] += 1
     return out
 

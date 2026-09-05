@@ -3,7 +3,31 @@ Break-even CONTRIBUTION + PROFIT (pooled), quota costi fissi datata e riconcilia
 del net di Sep 4. Deterministico, nessuna rete.
 """
 from src.metrics.fixed_costs import daily_fixed_allocation
-from src.metrics.profit import compute_breakeven, compute_breakeven_full
+from src.metrics.profit import (
+    compute_breakeven,
+    compute_breakeven_full,
+    compute_daily_metrics,
+    order_revenue,
+)
+
+
+# --------------------------------------------------------------- revenue definition
+def test_order_revenue_uses_current_total_price_dated_on_order():
+    # current_total_price = totale ATTUALE (netto dei rimborsi propri) -> è la revenue.
+    o = {"current_total_price": "84.00", "total_price": "100.00"}   # rimborso di 16 sull'ordine
+    assert order_revenue(o) == 84.0
+    # fallback a total_price se current_total_price assente (API vecchia)
+    assert order_revenue({"total_price": "100.00"}) == 100.0
+    assert order_revenue({"current_total_price": "", "total_price": "50.00"}) == 50.0
+
+
+def test_daily_metrics_revenue_is_current_total_price():
+    orders = [
+        {"id": 1, "current_total_price": "84.00", "total_price": "100.00", "line_items": []},
+        {"id": 2, "total_price": "40.00", "line_items": []},   # nessun current -> fallback 40
+    ]
+    m = compute_daily_metrics("2026-09-04", orders, {})
+    assert round(m.revenue, 2) == 124.0   # 84 (netto) + 40, datati sull'ordine
 
 
 # --------------------------------------------------------------------------- #3 POOLED

@@ -117,7 +117,9 @@ def main() -> int:
         created_day = _rome_day(o.get("created_at"))
         cancelled = bool(o.get("cancelled_at"))
         if created_day in dayset and not cancelled:
-            rev[created_day] += _f(o.get("total_price"))
+            # Mirror produzione: current_total_price (netto dei rimborsi propri, data-ordine).
+            ctp = o.get("current_total_price")
+            rev[created_day] += _f(ctp if ctp not in (None, "") else o.get("total_price"))
             cnt[created_day] += 1
             if _near_midnight(o.get("created_at")):
                 boundary[created_day].append(o.get("id") or o.get("order_number"))
@@ -151,13 +153,13 @@ def main() -> int:
 
     if shopify:
         print(f"\nDiff (our − Shopify) over window: ${tot_diff:,.2f}")
-        print(f"Refunds PROCESSED in window (Shopify nets these, we don't): ${tot_refp:,.2f}")
-        residual = tot_diff - tot_refp
-        print(f"Residual after refunds: ${residual:,.2f}  "
-              f"(should be ~0 if refunds explain it; else check boundary orders above)")
+        print("  This is a TIMING difference (refund date vs order date), NOT a discrepancy:")
+        print("  we use current_total_price dated on the ORDER day (nets an order's own refunds")
+        print("  on the order day); Shopify total_sales nets refunds on the REFUND date.")
+        print(f"  Refunds PROCESSED in window (drive the timing gap): ${tot_refp:,.2f}")
         bdays = {d: boundary[d] for d in days if boundary[d]}
         if bdays:
-            print(f"Boundary orders (±120s of midnight): {bdays}")
+            print(f"Boundary orders (±120s of midnight — verify none double-count): {bdays}")
     return 0
 
 
