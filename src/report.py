@@ -47,6 +47,32 @@ def yesterday_window(now: Optional[datetime] = None) -> DayWindow:
     return day_window((now - timedelta(days=1)).date())
 
 
+def _orders_in_window(orders: list[dict], window: DayWindow) -> list[dict]:
+    """
+    Tiene SOLO gli ordini con created_at nel semiaperto [start, end) di Roma.
+
+    Shopify filtra `created_at_max` in modo INCLUSIVO: un ordine creato ESATTAMENTE alla
+    mezzanotte di confine tornerebbe sia nel giorno che nel successivo (doppio conteggio al
+    boundary). Qui rifiltriamo lato nostro con semantica [start, end) così ogni ordine cade in
+    UN solo giorno Europe/Rome. Ordini senza created_at valido vengono tenuti (best-effort).
+    """
+    tz = pytz.timezone(settings.TIMEZONE)
+    kept: list[dict] = []
+    for o in orders:
+        raw = o.get("created_at")
+        if not raw:
+            kept.append(o)
+            continue
+        try:
+            created = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(tz)
+        except (ValueError, TypeError):
+            kept.append(o)
+            continue
+        if window.start <= created < window.end:
+            kept.append(o)
+    return kept
+
+
 def refresh_today_and_yesterday() -> str:
     """
     Force re-pull di TUTTE le piattaforme per OGGI e IERI, sovrascrive le righe DB,
@@ -93,6 +119,9 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
         print(f"[report] Shopify pull failed: {exc}")
         orders, handle_map = [], {}
 
+    # Boundary fix: tieni solo gli ordini davvero nel giorno [start, end) di Roma (Shopify usa
+    # created_at_max INCLUSIVO -> un ordine a mezzanotte di confine finirebbe in due giorni).
+    orders = _orders_in_window(orders, window)
     # annota il giorno Europe/Rome su ogni ordine (per la persistenza)
     for o in orders:
         o["_day_rome"] = window.day_str
@@ -165,12 +194,13 @@ def build_daily_report(
 
 
 def _own_day_breakeven(m: DailyMetrics):
-    """Break-even (ROAS, CPA) dai NUMERI DEL GIORNO STESSO (non finestra 4 giorni).
-    (None, None) se 0 ordini -> la vista mostra 'n/a'."""
-    from src.metrics.profit import compute_breakeven
+    """Break-even (dict contribution+profit) dai NUMERI DEL GIORNO STESSO (non finestra 4gg).
+    Valori None se 0 ordini -> la vista mostra 'n/a'."""
+    from src.metrics.profit import compute_breakeven_full
 
-    return compute_breakeven([{
+    return compute_breakeven_full([{
         "revenue": m.revenue, "num_orders": m.num_orders, "cogs_total": m.cogs_total,
+        "day": m.day,
     }])
 
 
@@ -212,7 +242,7 @@ def format_snapshot(
     Break-even dai numeri del giorno stesso (passato in `breakeven`).
     """
     m = g.metrics
-    be_roas, be_cpa = breakeven or (None, None)
+    be = breakeven or {}
     cogs_po = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
     gross = m.revenue - m.cogs_total
 
@@ -228,9 +258,12 @@ def format_snapshot(
         f"💵 Net profit — operating *${m.net_profit_operativo:,.2f}* · "
         f"net *${m.net_profit_netto:,.2f}*"
     )
-    roas_s = f"{be_roas:,.2f}x" if be_roas else "n/a"
-    cpa_s = f"${be_cpa:,.2f}" if be_cpa is not None else "n/a"
-    out.append(f"⚖️ Break-even ROAS: {roas_s} · CPA: {cpa_s} (own day)")
+    c_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
+    c_cpa = f"${be['cpa']:,.2f}" if be.get("cpa") is not None else "n/a"
+    p_roas = f"{be['profit_roas']:,.2f}x" if be.get("profit_roas") else "n/a"
+    p_cpa = f"${be['profit_cpa']:,.2f}" if be.get("profit_cpa") is not None else "n/a"
+    out.append(f"⚖️ Contribution break-even ROAS: {c_roas} · CPA: {c_cpa} (own day)")
+    out.append(f"🎯 Profit break-even ROAS: {p_roas} · CPA: {p_cpa} (incl. fixed; volume-dependent)")
     prov = " · provisional" if provisional else ""
     for line in (
         _roas_cpa_line("📣", "Meta", g.meta_daily),
@@ -305,22 +338,22 @@ def _load_shopify_sessions(shop, day: str) -> Optional[int]:
 
 def _load_breakeven(day: str, store=None):
     """
-    Break-even (ROAS, CPA) dai 4 giorni REALI più recenti PRIMA di `day`.
+    Break-even (dict contribution+profit) dai 4 giorni REALI più recenti PRIMA di `day`.
     Robusto ai buchi: se mancano giorni di calendario, va più indietro fino a
     raccogliere 4 giorni che hanno effettivamente dati in daily_metrics.
     """
     try:
-        from src.metrics.profit import compute_breakeven
+        from src.metrics.profit import compute_breakeven_full
 
         if store is None:
             from src.db.supabase_client import SupabaseStore
 
             store = SupabaseStore()
         rows = store.get_daily_metrics_before(day, limit=4)
-        return compute_breakeven(rows)
+        return compute_breakeven_full(rows)
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
         print(f"[report] break-even non calcolato: {exc}")
-        return None, None
+        return None
 
 
 def _load_meta(day: str, persist: bool):
@@ -938,7 +971,7 @@ def backfill_daily_metrics(
     while cur <= d1:
         w = day_window(cur)
         try:
-            orders = shop.get_orders(w.start, w.end)
+            orders = _orders_in_window(shop.get_orders(w.start, w.end), w)  # boundary fix
             for o in orders:
                 o["_day_rome"] = w.day_str
             m = compute_daily_metrics(
@@ -989,12 +1022,23 @@ def _fmt_cvr(cvr_fraction: Optional[float]) -> str:
     return f"{cvr * 100:.2f}%" if cvr > 0 else "n/a"
 
 
-def _breakeven_line(breakeven: Optional[tuple]) -> str:
-    """Riga break-even ROAS/CPA (media 4 giorni). 'n/a' se non calcolabile."""
-    be_roas, be_cpa = (breakeven or (None, None))
-    roas_s = f"{be_roas:,.2f}x" if be_roas else "n/a"
-    cpa_s = f"${be_cpa:,.2f}" if be_cpa is not None else "n/a"
-    return f"⚖️ Break-even ROAS: {roas_s} · Break-even CPA: {cpa_s} (4-day avg)"
+def _breakeven_line(breakeven) -> str:
+    """
+    Righe break-even (finestra 4 giorni, totali POOLED):
+      - CONTRIBUTION break-even (esclude i costi fissi)
+      - PROFIT break-even (include la quota fissa/ordine; dipende dal VOLUME ordini)
+    'n/a' se non calcolabile.
+    """
+    be = breakeven or {}
+    c_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
+    c_cpa = f"${be['cpa']:,.2f}" if be.get("cpa") is not None else "n/a"
+    p_roas = f"{be['profit_roas']:,.2f}x" if be.get("profit_roas") else "n/a"
+    p_cpa = f"${be['profit_cpa']:,.2f}" if be.get("profit_cpa") is not None else "n/a"
+    return (
+        f"⚖️ Contribution break-even ROAS: {c_roas} · CPA: {c_cpa} (4-day pooled)\n"
+        f"🎯 Profit break-even ROAS: {p_roas} · CPA: {p_cpa} "
+        f"_(incl. fixed cost/order; depends on order volume)_"
+    )
 
 
 def _margin_line(m: DailyMetrics) -> str:
@@ -1083,7 +1127,8 @@ def format_report(
         out.append(f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}")
 
     # ---- SEZIONE 3 — PER-PLATFORM AD BREAKDOWN ------------------------------
-    be_roas = (breakeven or (None, None))[0]
+    # ROAS di riferimento per gli ads = CONTRIBUTION break-even (il target per andare in pari).
+    be_roas = (breakeven or {}).get("roas")
     section3 = (
         _format_meta_section(meta_daily, meta_campaigns, be_roas)
         + _format_tiktok_section(tiktok_daily, tiktok_campaigns, be_roas)
@@ -1108,9 +1153,12 @@ def _format_google_section(
 
     spend = float(google_daily.get("spend") or 0)
     revenue = float(google_daily.get("revenue") or 0)
-    orders = int(google_daily.get("orders") or 0)
     roas = float(google_daily.get("roas") or 0)
     cpa = float(google_daily.get("cpa") or 0)
+    # Conversioni FRAZIONARIE per il display: la CPA è corretta su conversioni frazionarie
+    # (es. $41.73 ÷ 2.5 = $16.69), ma `orders` è salvato come intero (2). Ricaviamo il valore
+    # frazionario da spend ÷ CPA così i numeri quadrano visivamente ("2.5").
+    conv = (spend / cpa) if cpa > 0 else float(google_daily.get("orders") or 0)
 
     out = (
         f"\n🔎 *Google Ads — {google_daily.get('day')}* _(USD, via Triple Whale)_\n"
@@ -1118,8 +1166,8 @@ def _format_google_section(
         f"   • ROAS: *{roas:,.2f}x* (break-even {_be_roas_x(be_roas)})\n"
         f"   • Attributed revenue: ${revenue:,.2f}\n"
     )
-    if orders > 0:
-        out += f"   • CPA: ${cpa:,.2f} · conversions: {orders}\n"
+    if conv > 0:
+        out += f"   • CPA: ${cpa:,.2f} · conversions: {conv:,.1f}\n"
     return out
 
 
@@ -1359,7 +1407,7 @@ def aggregate_week(
 ):
     """Aggrega le righe DB di N giorni in (metrics, dicts piattaforma, breakeven, header).
     `header` opzionale: se assente, usa "{n}-day report — start → end"."""
-    from src.metrics.profit import DailyMetrics, compute_breakeven
+    from src.metrics.profit import DailyMetrics, compute_breakeven_full
 
     rows = sorted(daily_rows, key=lambda r: r["day"])
     day_set = {r["day"] for r in rows}
@@ -1410,9 +1458,10 @@ def aggregate_week(
                 tot_sessions += ord_d / cvr_d
         m.store_cvr = (tot_conv / tot_sessions) if tot_sessions > 0 else 0.0
 
-    # break-even: resta a 4 giorni (i 4 più recenti del set)
+    # break-even: resta a 4 giorni (i 4 più recenti del set), totali POOLED,
+    # contribution + profit (dict).
     last4 = sorted(rows, key=lambda r: r["day"], reverse=True)[:4]
-    breakeven = compute_breakeven(last4)
+    breakeven = compute_breakeven_full(last4)
 
     meta_daily = _agg_ad_platform(meta_rows, day_set, label)
     tiktok_daily = _agg_ad_platform(tiktok_rows, day_set, label)

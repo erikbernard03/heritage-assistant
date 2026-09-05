@@ -184,30 +184,37 @@ def compute_daily_metrics(
     return m
 
 
-def compute_breakeven(prev_days_rows: list[dict]) -> tuple[Optional[float], Optional[float]]:
+def compute_breakeven_full(prev_days_rows: list[dict]) -> dict:
     """
-    Break-even ROAS e CPA dalla MEDIA degli ultimi N giorni (codice puro, deterministico).
+    Break-even CONTRIBUTION e PROFIT sui totali POOLED della finestra (codice puro).
 
-    Usa l'aggregato (somma) dei giorni passati forniti:
-      avg_AOV          = somma(revenue) / somma(ordini)
-      avg_COGS/ordine  = somma(cogs)    / somma(ordini)
+    METODO POOLED (non media di AOV giornalieri):
+      avg_AOV          = Σ(revenue) / Σ(ordini)
+      avg_COGS/ordine  = Σ(cogs)    / Σ(ordini)
+
+    CONTRIBUTION break-even (esclude i costi fissi):
       contrib/ordine   = avg_AOV − avg_COGS/ordine − fee/ordine(7.5%·AOV) − spedizione($7)
-      break-even CPA   = contrib/ordine  (massimo CPA per andare in pari)
-      break-even ROAS  = avg_AOV / contrib/ordine
-      (la contribuzione sottrae COGS + fee pagamenti + spedizione: dà ~1.58x reale)
+      contribution CPA = contrib/ordine   ·  contribution ROAS = avg_AOV / contrib/ordine
 
-    Ritorna (None, None) se non ci sono ordini sufficienti / margine non positivo.
+    PROFIT break-even (include la quota costi fissi, dipende dal VOLUME ordini):
+      fixed/ordine     = Σ(quota fissa giornaliera DATATA) / Σ(ordini)
+                       = quota_fissa_giornaliera / (ordini medi al giorno della finestra)
+      profit CPA       = contribution CPA − fixed/ordine
+      profit ROAS      = avg_AOV / profit CPA
+
+    Ritorna un dict con roas/cpa (contribution) + profit_roas/profit_cpa +
+    avg_orders_per_day + fixed_per_order. Valori None se ordini insufficienti / margine ≤ 0.
     """
+    empty = {"roas": None, "cpa": None, "profit_roas": None, "profit_cpa": None,
+             "avg_orders_per_day": 0.0, "fixed_per_order": 0.0}
     total_rev = sum(_to_float(r.get("revenue")) for r in prev_days_rows)
     total_orders = sum(int(r.get("num_orders") or 0) for r in prev_days_rows)
     total_cogs = sum(_to_float(r.get("cogs_total")) for r in prev_days_rows)
     if total_orders <= 0:
-        return None, None
+        return empty
 
     avg_aov = total_rev / total_orders
     avg_cogs_per_order = total_cogs / total_orders
-    # Contribuzione per ordine al netto dei costi VARIABILI (COGS + fee + spedizione).
-    # È anche il break-even CPA: il massimo che possiamo pagare per ordine per andare in pari.
     be_cpa = (
         avg_aov
         - avg_cogs_per_order
@@ -215,4 +222,28 @@ def compute_breakeven(prev_days_rows: list[dict]) -> tuple[Optional[float], Opti
         - settings.SPEDIZIONE_PER_ORDINE
     )
     be_roas = (avg_aov / be_cpa) if be_cpa > 0 else None
-    return be_roas, be_cpa
+
+    # Quota costi fissi per ordine: Σ quota giornaliera DATATA sui giorni della finestra ÷ ordini.
+    from src.metrics.fixed_costs import daily_fixed_allocation
+
+    day_vals = [str(r.get("day")) for r in prev_days_rows if r.get("day")]
+    num_days = len(set(day_vals)) or len(prev_days_rows) or 1
+    fixed_total = sum(daily_fixed_allocation(d) for d in day_vals)
+    fixed_per_order = (fixed_total / total_orders) if total_orders else 0.0
+    avg_orders_per_day = total_orders / num_days if num_days else float(total_orders)
+
+    profit_cpa = (be_cpa - fixed_per_order) if be_cpa is not None else None
+    profit_roas = (avg_aov / profit_cpa) if (profit_cpa and profit_cpa > 0) else None
+
+    return {"roas": be_roas, "cpa": be_cpa, "profit_roas": profit_roas,
+            "profit_cpa": profit_cpa, "avg_orders_per_day": avg_orders_per_day,
+            "fixed_per_order": fixed_per_order}
+
+
+def compute_breakeven(prev_days_rows: list[dict]) -> tuple[Optional[float], Optional[float]]:
+    """
+    Contribution break-even (ROAS, CPA) sui totali POOLED — retro-compatibile.
+    Delega a compute_breakeven_full; ritorna solo la coppia contribution.
+    """
+    full = compute_breakeven_full(prev_days_rows)
+    return full["roas"], full["cpa"]

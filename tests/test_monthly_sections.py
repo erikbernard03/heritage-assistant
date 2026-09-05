@@ -26,7 +26,10 @@ def test_fixed_cost_schedule_dated():
     assert monthly_fixed_cost_for("2026-07-15") == 7666
     assert monthly_fixed_cost_for("2026-08-01") == 7666       # giorno prima dello switch
     assert monthly_fixed_cost_for("2026-08-02") == 6117       # switch (incluso)
-    assert monthly_fixed_cost_for("2026-09-30") == 6117
+    assert monthly_fixed_cost_for("2026-08-31") == 6117       # giorno prima dello switch Sep
+    assert monthly_fixed_cost_for("2026-09-01") == 12135.77   # switch (incluso, +stipendio)
+    assert monthly_fixed_cost_for("2026-09-30") == 12135.77
+    assert round(daily_fixed_allocation("2026-09-04"), 2) == 404.53
     assert round(daily_fixed_allocation("2026-08-19"), 2) == round(6117 / 30, 2)
     assert round(daily_fixed_allocation("2026-05-29"), 2) == round(5668 / 30, 2)
 

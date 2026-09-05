@@ -106,7 +106,7 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
      klaviyo_daily, klaviyo_campaigns, breakeven, _header) = aggregate_period(
         daily_rows, store,
     )
-    be_roas, be_cpa = breakeven or (None, None)
+    be = breakeven or {}
     days = sorted({r["day"] for r in daily_rows})
 
     # Serie giornaliera break-even/AOV: serve un lookback PRIMA dell'inizio periodo, così
@@ -151,7 +151,9 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
         "meta_daily": meta_daily, "tiktok_daily": tiktok_daily,
         "google_daily": google_daily, "klaviyo_daily": klaviyo_daily,
         "meta_campaigns": meta_campaigns,
-        "breakeven": {"roas": be_roas, "cpa": be_cpa},
+        "breakeven": {"roas": be.get("roas"), "cpa": be.get("cpa"),
+                      "profit_roas": be.get("profit_roas"), "profit_cpa": be.get("profit_cpa"),
+                      "avg_orders_per_day": be.get("avg_orders_per_day")},
         "num_days": len(days),
         "daily_rows": sorted(daily_rows, key=lambda r: r["day"]),
         "be_series": be_series,
@@ -177,7 +179,7 @@ def _compute_today_live() -> dict | None:
     today = periods.rome_today()
     g = _gather_day(day_window(today), persist=False)
     m = g.metrics
-    be_roas, be_cpa = _own_day_breakeven(m)
+    be = _own_day_breakeven(m) or {}
     return {
         "metrics": {
             "num_orders": m.num_orders, "revenue": m.revenue, "aov": m.aov,
@@ -190,7 +192,9 @@ def _compute_today_live() -> dict | None:
         "meta_daily": g.meta_daily, "tiktok_daily": g.tiktok_daily,
         "google_daily": g.google_daily, "klaviyo_daily": g.klaviyo_daily,
         "meta_campaigns": g.meta_campaigns,
-        "breakeven": {"roas": be_roas, "cpa": be_cpa},
+        "breakeven": {"roas": be.get("roas"), "cpa": be.get("cpa"),
+                      "profit_roas": be.get("profit_roas"), "profit_cpa": be.get("profit_cpa"),
+                      "avg_orders_per_day": be.get("avg_orders_per_day")},
         "num_days": 1,
     }
 
@@ -427,17 +431,26 @@ def _select_period() -> tuple[str, str, str]:
 def _render_period_highlights(m: dict, be: dict, meta_roas: float, be_note: str) -> None:
     """Le 5 metriche principali del periodo, EVIDENZIATE in cima."""
     st.subheader("⭐ Key figures")
-    be_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
-    be_cpa = _usd(be["cpa"]) if be.get("cpa") is not None else "n/a"
+    c_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
+    c_cpa = _usd(be["cpa"]) if be.get("cpa") is not None else "n/a"
+    p_roas = f"{be['profit_roas']:,.2f}x" if be.get("profit_roas") else "n/a"
+    p_cpa = _usd(be["profit_cpa"]) if be.get("profit_cpa") is not None else "n/a"
     r1 = st.columns(2)
     r1[0].metric("Revenue", _usd(m["revenue"]))
     r1[1].metric("Net profit (net)", _usd(m["net_profit_netto"]))
     r2 = st.columns(2)
-    r2[0].metric("Break-even ROAS", be_roas)
-    r2[1].metric("Break-even CPA", be_cpa)
+    r2[0].metric("Contribution break-even ROAS", c_roas)
+    r2[1].metric("Contribution break-even CPA", c_cpa)
     r3 = st.columns(2)
-    r3[0].metric("Meta ROAS", f"{float(meta_roas or 0):,.2f}x" if meta_roas else "n/a")
-    st.caption(f"Break-even is computed from the **{be_note}**.")
+    r3[0].metric("Profit break-even ROAS", p_roas)
+    r3[1].metric("Profit break-even CPA", p_cpa)
+    r4 = st.columns(2)
+    r4[0].metric("Meta ROAS", f"{float(meta_roas or 0):,.2f}x" if meta_roas else "n/a")
+    apd = be.get("avg_orders_per_day")
+    apd_s = f" (~{apd:.1f} orders/day)" if apd else ""
+    st.caption(f"Break-even from the **{be_note}**, pooled totals. **Contribution** excludes "
+               f"fixed costs; **Profit** adds the fixed-cost allocation per order and therefore "
+               f"**depends on order volume**{apd_s}.")
 
 
 def _render_kpis(m: dict) -> None:
@@ -762,11 +775,17 @@ def _render_google_monthly(google_by_month: dict) -> None:
     st.caption("Google is account-level only (Triple Whale) — no per-campaign breakdown.")
     from src.dashboard.monthly import month_label
 
+    def _conv(g):
+        # Conversioni FRAZIONARIE (1 decimale): la CPA è corretta su conversioni frazionarie,
+        # quindi ricaviamo il valore da spend ÷ CPA così "2.5" quadra visivamente con la CPA.
+        cpa = float(g.get("cpa") or 0)
+        return round(float(g["spend"]) / cpa, 1) if cpa > 0 else round(float(g.get("orders") or 0), 1)
+
     df = pd.DataFrame([{
         "Month": month_label(mn),
         "Spend": round(g["spend"], 2),
         "Revenue": round(g["revenue"], 2),
-        "Orders": int(g["orders"]),
+        "Conversions": _conv(g),
         "ROAS": round(g["roas"], 2),
         "CPA": (round(g["cpa"], 2) if g["orders"] else None),
     } for mn, g in sorted(google_by_month.items(), reverse=True)])

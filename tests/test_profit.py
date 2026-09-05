@@ -198,10 +198,10 @@ def test_load_breakeven_uses_4_real_days_despite_gaps():
         {"day": "2026-06-01", "revenue": 100, "num_orders": 1, "cogs_total": 10},
         {"day": "2026-05-20", "revenue": 999, "num_orders": 9, "cogs_total": 99},  # oltre i 4
     ]
-    be_roas, be_cpa = _load_breakeven("2026-06-10", store=_FakeStore(rows))
+    be = _load_breakeven("2026-06-10", store=_FakeStore(rows))
     # 4 giorni reali aggregati -> AOV 100, COGS/ord 10 -> CPA = 100-10-7.5-7 = 75.5
-    assert round(be_cpa, 2) == 75.5
-    assert round(be_roas, 6) == round(100 / 75.5, 6)
+    assert round(be["cpa"], 2) == 75.5
+    assert round(be["roas"], 6) == round(100 / 75.5, 6)
 
 
 def test_load_breakeven_single_day_still_works():
@@ -209,8 +209,8 @@ def test_load_breakeven_single_day_still_works():
     from src.report import _load_breakeven
 
     rows = [{"day": "2026-06-09", "revenue": 120, "num_orders": 1, "cogs_total": 12}]
-    be_roas, be_cpa = _load_breakeven("2026-06-10", store=_FakeStore(rows))
-    assert be_cpa is not None and be_roas is not None
+    be = _load_breakeven("2026-06-10", store=_FakeStore(rows))
+    assert be["cpa"] is not None and be["roas"] is not None
 
 
 class _FakeShop:

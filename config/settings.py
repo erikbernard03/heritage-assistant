@@ -89,6 +89,8 @@ FIXED_COSTS_SCHEDULE = [
     {"from": "2000-01-01", "monthly": 5668},
     {"from": "2026-06-11", "monthly": 7666},
     {"from": "2026-08-02", "monthly": 6117},
+    # Dal 2026-09-01 include lo stipendio del titolare: 12135.77/mese -> 404.53/giorno.
+    {"from": "2026-09-01", "monthly": 12135.77},
 ]
 
 # Soglie alert (Fase 2+ per la parte ads, qui solo predisposte)

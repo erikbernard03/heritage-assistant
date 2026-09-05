@@ -41,14 +41,16 @@ def _two_gold_signet_day():
 def test_own_day_breakeven_from_that_days_numbers():
     m = _two_gold_signet_day()
     # AOV 75, COGS/order 12 -> be_cpa = 75 - 12 - 0.075*75 - 7 = 50.375 ; roas = 75/50.375
-    be_roas, be_cpa = _own_day_breakeven(m)
-    assert round(be_cpa, 3) == 50.375
-    assert round(be_roas, 6) == round(75 / 50.375, 6)
+    be = _own_day_breakeven(m)
+    assert round(be["cpa"], 3) == 50.375
+    assert round(be["roas"], 6) == round(75 / 50.375, 6)
 
 
 def test_own_day_breakeven_zero_orders_is_none():
     m = compute_daily_metrics("2026-08-19", [], {}, resolver=RESOLVER)
-    assert _own_day_breakeven(m) == (None, None)
+    be = _own_day_breakeven(m)
+    assert be["roas"] is None and be["cpa"] is None
+    assert be["profit_roas"] is None and be["profit_cpa"] is None
 
 
 def test_snapshot_math_and_layout():
@@ -68,7 +70,8 @@ def test_snapshot_math_and_layout():
     # net netto = 100.75 − 203.90(fixed) = −103.15
     assert "net *$-103.15*" in text
     # break-even dal giorno stesso: 75/50.375 = 1.49x ; CPA $50.38
-    assert "⚖️ Break-even ROAS: 1.49x · CPA: $50.38 (own day)" in text
+    assert "⚖️ Contribution break-even ROAS: 1.49x · CPA: $50.38 (own day)" in text
+    assert "🎯 Profit break-even ROAS:" in text
     # sezioni + nota provvisoria
     assert "*2) COST BREAKDOWN*" in text
     assert "Fixed-costs allocation (full day): −$203.90" in text
@@ -82,7 +85,7 @@ def test_snapshot_zero_orders_shows_na_and_no_provisional_note():
     assert "🛒 Orders: *0*" in text
     assert "🧾 AOV: $0.00" in text
     assert "📦 Gross profit (rev − COGS): *$0.00*" in text
-    assert "⚖️ Break-even ROAS: n/a · CPA: n/a (own day)" in text
+    assert "⚖️ Contribution break-even ROAS: n/a · CPA: n/a (own day)" in text
     assert "_No ad-platform data yet._" in text
     assert "provisional" not in text          # nessuna nota per ieri
 
