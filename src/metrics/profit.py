@@ -43,6 +43,30 @@ def order_revenue(order: dict) -> float:
     return _to_float(v)
 
 
+def _shop_money(order: dict, *keys) -> Optional[float]:
+    """Primo `<key>_set.shop_money.amount` presente (valuta base dello store)."""
+    for k in keys:
+        s = order.get(k)
+        if isinstance(s, dict):
+            amt = (s.get("shop_money") or {}).get("amount")
+            if amt not in (None, ""):
+                return _to_float(amt)
+    return None
+
+
+def order_revenue_usd(order: dict, currency_to_usd: float = 1.0) -> float:
+    """
+    Revenue dell'ordine in USD, multi-valuta:
+      - usa `current_total_price_set.shop_money` (importo nella VALUTA BASE dello store, già
+        convertito da Shopify dal presentment) → moltiplicato per `currency_to_usd`;
+      - fallback: total_price_set.shop_money, poi current_total_price/total_price (top-level).
+    Per lo store .com (valuta base USD, currency_to_usd=1.0) coincide con order_revenue.
+    """
+    shop = _shop_money(order, "current_total_price_set", "total_price_set")
+    base = shop if shop is not None else order_revenue(order)
+    return base * float(currency_to_usd or 1.0)
+
+
 def _is_cancelled(order: dict) -> bool:
     return bool(order.get("cancelled_at"))
 
@@ -132,6 +156,8 @@ def compute_daily_metrics(
     handle_map: dict[int, str],
     resolver: Optional[CogsResolver] = None,
     ads_spend: float = 0.0,
+    fee_rate: Optional[float] = None,
+    currency_to_usd: float = 1.0,
 ) -> DailyMetrics:
     """
     Calcola le metriche del giorno a partire dagli ordini Shopify.
@@ -139,9 +165,12 @@ def compute_daily_metrics(
     - `orders`: ordini Shopify (con line_items) creati nel giorno.
     - `handle_map`: product_id -> handle (per risolvere il COGS per handle).
     - `ads_spend`: spesa pubblicitaria totale in USD (Fase 1 = 0).
-    Gli ordini cancellati sono esclusi da revenue/conteggio.
+    - `fee_rate`: aliquota fee pagamenti dello store (default = settings.FEE_PAGAMENTI, .com).
+    - `currency_to_usd`: tasso valuta-base-store -> USD (1.0 per il .com in USD).
+    Gli ordini cancellati sono esclusi da revenue/conteggio. Revenue convertita in USD.
     """
     resolver = resolver or get_resolver()
+    fee_rate = settings.FEE_PAGAMENTI if fee_rate is None else float(fee_rate)
     m = DailyMetrics(day=day)
 
     for order in orders:
@@ -149,8 +178,8 @@ def compute_daily_metrics(
             continue
 
         order_id = int(order.get("id", 0))
-        # Revenue = current_total_price (netto dei rimborsi propri, datato sull'ordine).
-        revenue = order_revenue(order)
+        # Revenue = current_total_price in USD (netto rimborsi propri, datato sull'ordine).
+        revenue = order_revenue_usd(order, currency_to_usd)
         m.revenue += revenue
         # spedizione + IVA sono GIÀ dentro total_price: le separiamo solo per mostrarle
         m.shipping_collected += _order_shipping_collected(order)
@@ -180,7 +209,7 @@ def compute_daily_metrics(
             )
 
     m.shipping_total = settings.SPEDIZIONE_PER_ORDINE * m.num_orders
-    m.payment_fees = settings.FEE_PAGAMENTI * m.revenue
+    m.payment_fees = fee_rate * m.revenue          # aliquota per-store
     m.ads_spend = ads_spend
 
     if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:

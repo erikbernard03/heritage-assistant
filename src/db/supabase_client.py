@@ -99,16 +99,17 @@ class SupabaseStore:
         self.client.table("daily_metrics").upsert(metrics.as_db_row()).execute()
 
     # -------------------------------------------------- product units (Fase 5)
-    def upsert_product_units(self, day: str, units_by_key: dict[str, int]) -> int:
+    def upsert_product_units(self, day: str, units_by_key: dict[str, int],
+                             store: str = "com") -> int:
         """
-        Riscrive le unità vendute per prodotto del giorno `day`. DELETE-then-INSERT perché
-        l'insieme dei bucket (product_key) può CAMBIARE tra run: es. i vecchi record 'other'
-        vengono sostituiti dai titoli reali. Un semplice upsert lascerebbe righe stale.
+        Riscrive le unità vendute per prodotto del giorno `day` per lo `store`. DELETE-then-INSERT
+        per (day, store) perché l'insieme dei bucket (product_key) può CAMBIARE tra run.
         units_by_key: {bucket: units} (bucket = chiave famiglia o titolo prodotto).
         """
-        self.client.table("product_units_daily").delete().eq("day", day).execute()
+        (self.client.table("product_units_daily").delete()
+         .eq("day", day).eq("store", store).execute())
         rows = [
-            {"day": day, "product_key": key, "units": int(units)}
+            {"day": day, "store": store, "product_key": key, "units": int(units)}
             for key, units in (units_by_key or {}).items()
             if int(units) != 0
         ]
@@ -118,14 +119,17 @@ class SupabaseStore:
         return len(rows)
 
     # ----------------------------------------------- sales by country (Fase 6)
-    def upsert_sales_by_country(self, day: str, by_country: dict[str, dict]) -> int:
+    def upsert_sales_by_country(self, day: str, by_country: dict[str, dict],
+                                store: str = "com") -> int:
         """
-        Riscrive le vendite per paese del giorno `day` (DELETE-then-INSERT: l'insieme dei
-        paesi può cambiare tra run). by_country: {country: {revenue, orders}}.
+        Riscrive le vendite per paese del giorno `day` per lo `store` (DELETE-then-INSERT per
+        (day, store)). by_country: {country: {revenue, orders}}.
         """
-        self.client.table("sales_by_country_daily").delete().eq("day", day).execute()
+        (self.client.table("sales_by_country_daily").delete()
+         .eq("day", day).eq("store", store).execute())
         rows = [
-            {"day": day, "country": c, "revenue": round(float(v.get("revenue") or 0), 2),
+            {"day": day, "store": store, "country": c,
+             "revenue": round(float(v.get("revenue") or 0), 2),
              "orders": int(v.get("orders") or 0)}
             for c, v in (by_country or {}).items()
             if int(v.get("orders") or 0) != 0
@@ -184,23 +188,50 @@ class SupabaseStore:
                .order("created", desc=True).limit(limit).execute())
         return res.data or []
 
-    def upsert_refunds_daily(self, day: str, agg: dict) -> None:
-        """Upsert dei refund Shopify del giorno (chiave = day)."""
+    def upsert_store_daily(self, day: str, store: str, metrics) -> None:
+        """
+        Totali giornalieri PER STORE (separabilità + tabella 'Per store' della dashboard).
+        `metrics` è un DailyMetrics del singolo store. Chiave = (day, store).
+        """
+        self.client.table("store_daily").upsert({
+            "day": day,
+            "store": store,
+            "revenue": round(float(metrics.revenue), 2),
+            "orders": int(metrics.num_orders),
+            "cogs_total": round(float(metrics.cogs_total), 2),
+            "payment_fees": round(float(metrics.payment_fees), 2),
+            "net_profit_operativo": round(float(metrics.net_profit_operativo), 2),
+            **({"store_sessions": int(metrics.store_sessions)}
+               if metrics.store_sessions is not None else {}),
+        }).execute()
+
+    def get_store_daily_range(self, start_day: str, end_day: str) -> list[dict]:
+        """Righe store_daily nel range [start, end] (per la tabella 'Per store')."""
+        res = (self.client.table("store_daily").select("*")
+               .gte("day", start_day).lte("day", end_day).execute())
+        return res.data or []
+
+    def upsert_refunds_daily(self, day: str, agg: dict, store: str = "com") -> None:
+        """Upsert dei refund Shopify del giorno per lo `store` (chiave = day+store)."""
         self.client.table("refunds_daily").upsert({
             "day": day,
+            "store": store,
             "refund_amount": round(float((agg or {}).get("amount") or 0), 2),
             "refund_count": int((agg or {}).get("count") or 0),
         }).execute()
 
     # -------------------------------------- sales by source (last-click, Fase 9)
-    def upsert_orders_by_source(self, day: str, by_source: dict[str, dict]) -> int:
+    def upsert_orders_by_source(self, day: str, by_source: dict[str, dict],
+                                store: str = "com") -> int:
         """
-        Riscrive le vendite per SORGENTE del giorno (DELETE-then-INSERT: l'insieme delle
-        sorgenti può cambiare tra run). by_source: {source: {revenue, orders}}.
+        Riscrive le vendite per SORGENTE del giorno per lo `store` (DELETE-then-INSERT per
+        (day, store)). by_source: {source: {revenue, orders}}.
         """
-        self.client.table("orders_by_source_daily").delete().eq("day", day).execute()
+        (self.client.table("orders_by_source_daily").delete()
+         .eq("day", day).eq("store", store).execute())
         rows = [
-            {"day": day, "source": s, "revenue": round(float(v.get("revenue") or 0), 2),
+            {"day": day, "store": store, "source": s,
+             "revenue": round(float(v.get("revenue") or 0), 2),
              "orders": int(v.get("orders") or 0)}
             for s, v in (by_source or {}).items()
             if int(v.get("orders") or 0) != 0
@@ -228,14 +259,17 @@ class SupabaseStore:
         self.client.table("tw_pixel_daily").insert(rows).execute()
         return len(rows)
 
-    def upsert_sales_by_hour(self, day: str, by_hour: dict[int, dict]) -> int:
+    def upsert_sales_by_hour(self, day: str, by_hour: dict[int, dict],
+                             store: str = "com") -> int:
         """
-        Riscrive le vendite per ORA del giorno `day` (DELETE-then-INSERT). by_hour:
-        {ora(0–23): {revenue, orders}}.
+        Riscrive le vendite per ORA del giorno `day` per lo `store` (DELETE-then-INSERT per
+        (day, store)). by_hour: {ora(0–23): {revenue, orders}}.
         """
-        self.client.table("sales_by_hour_daily").delete().eq("day", day).execute()
+        (self.client.table("sales_by_hour_daily").delete()
+         .eq("day", day).eq("store", store).execute())
         rows = [
-            {"day": day, "hour": int(h), "revenue": round(float(v.get("revenue") or 0), 2),
+            {"day": day, "store": store, "hour": int(h),
+             "revenue": round(float(v.get("revenue") or 0), 2),
              "orders": int(v.get("orders") or 0)}
             for h, v in (by_hour or {}).items()
             if int(v.get("orders") or 0) != 0
@@ -300,6 +334,7 @@ class SupabaseStore:
         "tiktok_campaigns", "google_daily", "klaviyo_daily", "klaviyo_campaigns",
         "product_units_daily", "sales_by_country_daily", "sales_by_hour_daily",
         "stripe_daily", "refunds_daily", "orders_by_source_daily", "tw_pixel_daily",
+        "store_daily",
     }
 
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:

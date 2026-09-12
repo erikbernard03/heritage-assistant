@@ -118,12 +118,18 @@ class ShopifyConnector:
         client_secret: Optional[str] = None,
         api_version: Optional[str] = None,
         timeout: int = 30,
+        store_label: str = "com",
+        currency_to_usd: float = 1.0,
     ):
         self.store = (store or settings.SHOPIFY_STORE).strip()
         self.client_id = client_id or settings.SHOPIFY_CLIENT_ID
         self.client_secret = client_secret or settings.SHOPIFY_CLIENT_SECRET
         self.api_version = api_version or settings.SHOPIFY_API_VERSION
         self.timeout = timeout
+        # Etichetta store ('com' = principale, 'co' = heritagering.co) per la colonna `store`.
+        self.store_label = store_label
+        # Tasso valuta-base-store -> USD (1.0 se lo store opera già in USD).
+        self.currency_to_usd = float(currency_to_usd or 1.0)
 
         if not self.store:
             raise ShopifyError("SHOPIFY_STORE non configurato (.env).")
@@ -136,6 +142,29 @@ class ShopifyConnector:
         self._token_expiry: float = 0.0
         self._granted_scopes: list[str] = []
         self._session = requests.Session()
+
+    @classmethod
+    def for_store_2(cls) -> "Optional[ShopifyConnector]":
+        """
+        Connettore per il SECONDO store (heritagering.co). None se non configurato
+        (SHOPIFY_STORE_2 vuoto) -> il sistema resta mono-store senza errori.
+        """
+        if not settings.SHOPIFY_STORE_2:
+            return None
+        return cls(
+            store=settings.SHOPIFY_STORE_2,
+            client_id=settings.SHOPIFY_CLIENT_ID_2,
+            client_secret=settings.SHOPIFY_CLIENT_SECRET_2,
+            store_label="co",
+            currency_to_usd=settings.SHOPIFY_STORE_2_CURRENCY_TO_USD,
+        )
+
+    def shop_currency(self) -> Optional[str]:
+        """Valuta base dello store (campo `currency` di /shop.json). Es. 'USD'. None se errore."""
+        try:
+            return (self.ping() or {}).get("currency")
+        except Exception:  # noqa: BLE001 — best effort
+            return None
 
     # ------------------------------------------------------------------ auth
     @property

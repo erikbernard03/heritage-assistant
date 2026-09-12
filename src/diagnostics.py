@@ -545,85 +545,82 @@ def shopify_diagnostic() -> str:
     e sessioni/visitatori (read_reports). Nessun segreto in output (client_id mascherato,
     token mai stampato).
     """
-    out: list[str] = ["🔎 Shopify diagnostic (read-only)"]
-    out.append(
-        f"Store: {settings.SHOPIFY_STORE or '(EMPTY)'} · "
-        f"client_id: {_mask(settings.SHOPIFY_CLIENT_ID)} · api {settings.SHOPIFY_API_VERSION}"
-    )
-    if not (settings.SHOPIFY_STORE and settings.SHOPIFY_CLIENT_ID
-            and settings.SHOPIFY_CLIENT_SECRET):
-        out.append("\n❌ Shopify credentials not set in this environment.")
-        return "\n".join(out)
-
     from src.connectors.shopify import ShopifyConnector
 
-    shop = ShopifyConnector()
+    out: list[str] = ["🔎 Shopify diagnostic (read-only)"]
 
-    # 1) scope concessi (dal grant client_credentials, campo `scope`)
-    out.append("\n— Granted Admin API scopes (live token) —")
-    try:
-        granted = set(shop.get_granted_scopes())
-    except Exception as exc:  # noqa: BLE001
-        out.append(f"❌ could not obtain token / scopes: {exc}")
-        return "\n".join(out)
-    for s in _SHOPIFY_NEEDED_SCOPES:
-        out.append(f"  {'✅' if s in granted else '❌'} {s}")
-    extra = sorted(granted - set(_SHOPIFY_NEEDED_SCOPES))
-    if extra:
-        out.append(f"  (other granted: {', '.join(extra)})")
+    def _probe_store(shop, label: str, show_currency: bool = False) -> None:
+        """Scope + prova ordini (recenti e >60gg) + sessioni per un singolo store."""
+        out.append(f"\n══ Store '{label}': {shop.store} · client_id {_mask(shop.client_id)} "
+                   f"· api {shop.api_version} ══")
+        try:
+            granted = set(shop.get_granted_scopes())
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"  ❌ could not obtain token / scopes: {exc}")
+            return
+        if show_currency:
+            out.append(f"  Shop base currency: {shop.shop_currency() or 'n/a'} "
+                       f"(currency_to_usd={shop.currency_to_usd})")
+        out.append("  — Granted Admin API scopes —")
+        for s in _SHOPIFY_NEEDED_SCOPES:
+            out.append(f"    {'✅' if s in granted else '❌'} {s}")
 
-    tz = pytz.timezone(settings.TIMEZONE)
-    today = datetime.now(tz).date()
+        tz = pytz.timezone(settings.TIMEZONE)
+        today = datetime.now(tz).date()
 
-    def _count_orders(d):
-        start = tz.localize(datetime.combine(d, time.min))
-        return len(shop.get_orders(start, start + timedelta(days=1)))
+        def _count_orders(d):
+            start = tz.localize(datetime.combine(d, time.min))
+            return len(shop.get_orders(start, start + timedelta(days=1)))
 
-    # 2) prova ordini: ieri (recente) + ~75 giorni fa (oltre i 60gg = read_all_orders)
-    out.append("\n— Orders probe —")
-    try:
-        y = today - timedelta(days=1)
-        out.append(f"  {y} (recent): {_count_orders(y)} orders")
-    except Exception as exc:  # noqa: BLE001
-        out.append(f"  ❌ recent orders call failed: {exc}")
-    try:
-        old = today - timedelta(days=75)
-        n_old = _count_orders(old)
-        if n_old > 0:
-            flag = "✅ read_all_orders is working (returns >60-day orders)"
+        out.append("  — Orders probe —")
+        try:
+            y = today - timedelta(days=1)
+            out.append(f"    {y} (recent): {_count_orders(y)} orders")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"    ❌ recent orders call failed: {exc}")
+        try:
+            old = today - timedelta(days=75)
+            n_old = _count_orders(old)
+            flag = ("✅ read_all_orders working (>60-day orders)" if n_old > 0
+                    else "⚠️ 0 — no orders that day OR read_all_orders missing")
+            out.append(f"    {old} (>60 days): {n_old} orders — {flag}")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"    ❌ >60-day orders call failed: {exc}")
+
+        out.append("  — Sessions / visitors probe (ShopifyQL FROM sessions) —")
+        try:
+            y = today - timedelta(days=1)
+            sess, err, _raw = shop.get_sessions_debug(y.isoformat())
+            if sess is not None:
+                out.append(f"    ✅ real Shopify sessions for {y}: {sess:,}")
+            elif err:
+                out.append(f"    ❌ ShopifyQL query FAILED (not a scope issue): {err}")
+            else:
+                out.append(f"    ⚠️ no rows returned for {y} (no data that day?).")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"    ❌ sessions call raised: {exc}")
+
+        missing = [s for s in ("read_all_orders", "read_reports") if s not in granted]
+        if missing:
+            out.append(f"  ➡️ Missing: {', '.join(missing)} — release a new app version with "
+                       "these scopes, re-approve on the store, then /backfill.")
         else:
-            flag = "⚠️ 0 — no orders that day OR read_all_orders still missing"
-        out.append(f"  {old} (>60 days): {n_old} orders — {flag}")
-    except Exception as exc:  # noqa: BLE001
-        out.append(f"  ❌ >60-day orders call failed: {exc}")
+            out.append("  ✅ read_all_orders + read_reports granted.")
 
-    # 3) prova sessioni/visitatori (read_reports, ShopifyQL FROM sessions).
-    #    NON assumiamo "scope mancante": stampiamo l'errore REALE della query se c'è.
-    out.append("\n— Sessions / visitors probe (ShopifyQL FROM sessions) —")
-    try:
-        y = today - timedelta(days=1)
-        sess, err, _raw = shop.get_sessions_debug(y.isoformat())
-        if sess is not None:
-            out.append(f"  ✅ real Shopify sessions for {y}: {sess:,}")
-        elif err:
-            out.append(f"  ❌ ShopifyQL query FAILED (not a scope issue): {err}")
-        else:
-            out.append(f"  ⚠️ no rows returned for {y} (no data that day?).")
-    except Exception as exc:  # noqa: BLE001
-        out.append(f"  ❌ sessions call raised: {exc}")
-
-    # 4) verdetto sui due scope target
-    missing = [s for s in ("read_all_orders", "read_reports") if s not in granted]
-    if missing:
-        out.append(
-            f"\n➡️ Missing: {', '.join(missing)}. Release a new app version with these "
-            "scopes and re-approve the app on the store, then /backfill."
-        )
+    # Store 1 (.com)
+    if not (settings.SHOPIFY_STORE and settings.SHOPIFY_CLIENT_ID
+            and settings.SHOPIFY_CLIENT_SECRET):
+        out.append("\n❌ Store 1 (.com) credentials not set in this environment.")
     else:
-        out.append(
-            "\n✅ read_all_orders + read_reports granted — /backfill can restore old "
-            "orders and fill real visitors."
-        )
+        _probe_store(ShopifyConnector(), "com")
+
+    # Store 2 (.co) — solo se configurato
+    shop2 = ShopifyConnector.for_store_2()
+    if shop2 is None:
+        out.append("\n(Store 'co' not configured: SHOPIFY_STORE_2 empty — single-store mode.)")
+    else:
+        _probe_store(shop2, "co", show_currency=True)
+
     return "\n".join(out)
 
 

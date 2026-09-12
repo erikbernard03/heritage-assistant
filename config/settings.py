@@ -21,6 +21,17 @@ SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID", "")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-04")
 
+# ---- Secondo store Shopify (heritagering.co, LATAM/Europe) — SOLA LETTURA ----
+# Stessa API version del primo store. Se SHOPIFY_STORE_2 è vuoto, il secondo store è
+# semplicemente ignorato (nessun pull, nessuna riga 'co'): il sistema resta mono-store.
+SHOPIFY_STORE_2 = os.getenv("SHOPIFY_STORE_2", "")
+SHOPIFY_CLIENT_ID_2 = os.getenv("SHOPIFY_CLIENT_ID_2", "")
+SHOPIFY_CLIENT_SECRET_2 = os.getenv("SHOPIFY_CLIENT_SECRET_2", "")
+# Tasso di cambio valuta-base-dello-store-2 -> USD. Se il .co ha come valuta base USD
+# (consigliato: Shopify converte già il presentment in USD nel shop_money), lascia 1.0.
+# Se la valuta base NON è USD, imposta qui il tasso (es. EUR->USD 1.08).
+SHOPIFY_STORE_2_CURRENCY_TO_USD = float(os.getenv("SHOPIFY_STORE_2_CURRENCY_TO_USD", "1.0"))
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
@@ -75,7 +86,15 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 # Parametri di business (configurabili)
 # ---------------------------------------------------------------------------
 # Net profit / costi
-FEE_PAGAMENTI = 0.075          # 7.5% sul revenue
+FEE_PAGAMENTI = 0.075          # 7.5% sul revenue (retro-compat; = fee del .com)
+# Fee pagamenti PER-STORE (le fee dei due store differiscono):
+#  - .com: Stripe 6.16% + surcharge Shopify 1% (verificato) = 7.5%
+#  - .co : Shopify Payments multi-valuta (carte intl + conversione) — stima iniziale 5%,
+#          da tarare sui dati reali di Shopify Finance.
+PAYMENT_FEE_RATE_COM = float(os.getenv("PAYMENT_FEE_RATE_COM", "0.075"))
+PAYMENT_FEE_RATE_CO = float(os.getenv("PAYMENT_FEE_RATE_CO", "0.05"))
+# Mappa store -> fee rate (usata dal cost breakdown: Σ revenue_store × rate_store).
+PAYMENT_FEE_RATE_BY_STORE = {"com": PAYMENT_FEE_RATE_COM, "co": PAYMENT_FEE_RATE_CO}
 SPEDIZIONE_PER_ORDINE = 7      # USD flat per ordine
 INCLUDI_COSTI_FISSI_IN_NET_PROFIT = True
 COSTI_FISSI_MENSILI = 6117     # USD (valore CORRENTE; retro-compat)
