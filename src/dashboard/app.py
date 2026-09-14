@@ -103,7 +103,7 @@ def _compute_period(start_iso: str, end_iso: str) -> dict | None:
         return None
 
     (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
-     klaviyo_daily, klaviyo_campaigns, breakeven, _header) = aggregate_period(
+     klaviyo_daily, klaviyo_campaigns, breakeven, _header, _store_views) = aggregate_period(
         daily_rows, store,
     )
     be = breakeven or {}
@@ -233,7 +233,7 @@ def _compute_monthly() -> dict | None:
     months: list[dict] = []
     for month, rows, partial in filter_visible_months(group_by_month(all_rows), today):
         (m, meta_daily, _mc, tiktok_daily, google_daily,
-         db_klaviyo, _kc, _be, _h) = aggregate_period(rows, store)
+         db_klaviyo, _kc, _be, _h, _sv) = aggregate_period(rows, store)
         visitors, est = monthly_visitors(rows)
 
         y, mo = (int(x) for x in month.split("-"))
@@ -310,10 +310,10 @@ def _compute_monthly() -> dict | None:
             mkey = str(r.get("day", ""))[:7]
             skey = r.get("store") or "com"
             acc = per_store_by_month.setdefault(mkey, {}).setdefault(
-                skey, {"revenue": 0.0, "orders": 0, "net_operating": 0.0})
+                skey, {"revenue": 0.0, "orders": 0, "cogs_total": 0.0})
             acc["revenue"] += float(r.get("revenue") or 0)
             acc["orders"] += int(r.get("orders") or 0)
-            acc["net_operating"] += float(r.get("net_profit_operativo") or 0)
+            acc["cogs_total"] += float(r.get("cogs_total") or 0)
     except Exception:  # noqa: BLE001 — migration 016 non ancora eseguita
         per_store_by_month = {}
     return {
@@ -1290,30 +1290,50 @@ def _render_sales_source_period(data: dict) -> None:
 
 
 def _render_per_store(monthly: dict) -> None:
-    """Sanity 'Per store': revenue, ordini, net operating per store per mese (dati merged altrove)."""
+    """
+    'Per store': revenue, ordini, AOV, net operating e CONTRIBUTION break-even per store per mese.
+    Il profit break-even resta a livello TOTALE (costi fissi = un solo pot). Net operating del
+    .com include la spesa ads del mese (tutta .com); il .co è organico (ads 0).
+    """
     from src.dashboard.monthly import month_label
+    from src.metrics.profit import compute_breakeven_full
+    from src.metrics.store_report import store_fee_rate
 
     per_store = monthly.get("per_store_by_month") or {}
-    # Mostra solo se esiste più di uno store (altrimenti è ridondante col resto).
     stores = sorted({s for m in per_store.values() for s in m})
     if len(stores) < 2:
         return
-    st.subheader("🏪 Per store (sanity check)")
-    st.caption("Everything else on this page is MERGED across stores. This table keeps the raw "
-               "per-store split (from store_daily): revenue, orders, net operating (excl. fixed).")
+    ad_by_month = {r["month"]: float(r.get("total_ad_spend") or 0.0)
+                   for r in (monthly.get("months") or [])}
+    st.subheader("🏪 Per store")
+    st.caption("Per-store split (from store_daily): revenue, orders, AOV, net operating, and "
+               "**contribution** break-even from each store's own AOV/COGS/fee (.com 7.5%, .co "
+               "5%). Profit break-even stays at TOTAL level only (fixed costs are one pot). "
+               "All ad spend is .com; .co is organic.")
     _labels = {"com": "heritagering.com", "co": "heritagering.co"}
     rows = []
     for mn in sorted(per_store, reverse=True):
         for s in stores:
             v = per_store[mn].get(s)
-            if not v:
+            if not v or int(v["orders"]) == 0:
                 continue
+            rev, orders, cogs = v["revenue"], int(v["orders"]), v["cogs_total"]
+            rate = store_fee_rate(s)
+            ads = ad_by_month.get(mn, 0.0) if s == "com" else 0.0
+            shipping = 7 * orders
+            fees = rate * rev
+            net_op = rev - cogs - shipping - fees - ads
+            be = compute_breakeven_full(
+                [{"revenue": rev, "num_orders": orders, "cogs_total": cogs}], fee_rate=rate)
             rows.append({
                 "Month": month_label(mn),
                 "Store": _labels.get(s, s),
-                "Revenue": round(v["revenue"], 2),
-                "Orders": int(v["orders"]),
-                "Net operating": round(v["net_operating"], 2),
+                "Revenue": round(rev, 2),
+                "Orders": orders,
+                "AOV": round(rev / orders, 2),
+                "Net operating": round(net_op, 2),
+                "Break-even ROAS": (round(be["roas"], 2) if be["roas"] else None),
+                "Break-even CPA": (round(be["cpa"], 2) if be["cpa"] is not None else None),
             })
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)

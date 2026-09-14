@@ -199,7 +199,9 @@ class SupabaseStore:
             "revenue": round(float(metrics.revenue), 2),
             "orders": int(metrics.num_orders),
             "cogs_total": round(float(metrics.cogs_total), 2),
+            "shipping_total": round(float(metrics.shipping_total), 2),
             "payment_fees": round(float(metrics.payment_fees), 2),
+            "ads_spend": round(float(metrics.ads_spend), 2),
             "net_profit_operativo": round(float(metrics.net_profit_operativo), 2),
             **({"store_sessions": int(metrics.store_sessions)}
                if metrics.store_sessions is not None else {}),
@@ -209,6 +211,17 @@ class SupabaseStore:
         """Righe store_daily nel range [start, end] (per la tabella 'Per store')."""
         res = (self.client.table("store_daily").select("*")
                .gte("day", start_day).lte("day", end_day).execute())
+        return res.data or []
+
+    def get_store_daily_before(self, day: str, store: str, limit: int = 4) -> list[dict]:
+        """
+        Ultime `limit` righe store_daily di uno STORE con day < `day` e ordini > 0 (le più
+        recenti prima). Per il break-even 4-giorni PER STORE (gap-safe; il .co usa solo i
+        giorni in cui ha ordini).
+        """
+        res = (self.client.table("store_daily").select("*")
+               .eq("store", store).lt("day", day).gt("orders", 0)
+               .order("day", desc=True).limit(limit).execute())
         return res.data or []
 
     def upsert_refunds_daily(self, day: str, agg: dict, store: str = "com") -> None:

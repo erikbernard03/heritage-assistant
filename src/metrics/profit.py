@@ -261,16 +261,19 @@ def combine_daily_metrics(day: str, parts: list["DailyMetrics"]) -> DailyMetrics
     return m
 
 
-def compute_breakeven_full(prev_days_rows: list[dict]) -> dict:
+def compute_breakeven_full(prev_days_rows: list[dict], fee_rate: Optional[float] = None) -> dict:
     """
     Break-even CONTRIBUTION e PROFIT sui totali POOLED della finestra (codice puro).
+
+    `fee_rate`: aliquota fee pagamenti dello store (default settings.FEE_PAGAMENTI = .com 7.5%).
+    Per il break-even PER STORE si passa l'aliquota dello store (.com 7.5%, .co 5%).
 
     METODO POOLED (non media di AOV giornalieri):
       avg_AOV          = Σ(revenue) / Σ(ordini)
       avg_COGS/ordine  = Σ(cogs)    / Σ(ordini)
 
     CONTRIBUTION break-even (esclude i costi fissi):
-      contrib/ordine   = avg_AOV − avg_COGS/ordine − fee/ordine(7.5%·AOV) − spedizione($7)
+      contrib/ordine   = avg_AOV − avg_COGS/ordine − fee/ordine(fee_rate·AOV) − spedizione($7)
       contribution CPA = contrib/ordine   ·  contribution ROAS = avg_AOV / contrib/ordine
 
     PROFIT break-even (include la quota costi fissi, dipende dal VOLUME ordini):
@@ -279,9 +282,13 @@ def compute_breakeven_full(prev_days_rows: list[dict]) -> dict:
       profit CPA       = contribution CPA − fixed/ordine
       profit ROAS      = avg_AOV / profit CPA
 
+    NB: il PROFIT break-even usa i costi fissi (pot condiviso a livello TOTALE) e va calcolato
+    solo sul totale; per i singoli store si usa la sola parte CONTRIBUTION.
+
     Ritorna un dict con roas/cpa (contribution) + profit_roas/profit_cpa +
     avg_orders_per_day + fixed_per_order. Valori None se ordini insufficienti / margine ≤ 0.
     """
+    fee_rate = settings.FEE_PAGAMENTI if fee_rate is None else float(fee_rate)
     empty = {"roas": None, "cpa": None, "profit_roas": None, "profit_cpa": None,
              "avg_orders_per_day": 0.0, "fixed_per_order": 0.0}
     total_rev = sum(_to_float(r.get("revenue")) for r in prev_days_rows)
@@ -295,7 +302,7 @@ def compute_breakeven_full(prev_days_rows: list[dict]) -> dict:
     be_cpa = (
         avg_aov
         - avg_cogs_per_order
-        - settings.FEE_PAGAMENTI * avg_aov
+        - fee_rate * avg_aov
         - settings.SPEDIZIONE_PER_ORDINE
     )
     be_roas = (avg_aov / be_cpa) if be_cpa > 0 else None

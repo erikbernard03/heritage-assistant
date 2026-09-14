@@ -56,6 +56,48 @@ def test_per_store_fee_config():
     assert settings.PAYMENT_FEE_RATE_BY_STORE["co"] == 0.05
 
 
+def test_breakeven_fee_rate_per_store():
+    from src.metrics.profit import compute_breakeven_full
+
+    rows = [{"revenue": 1000.0, "num_orders": 10, "cogs_total": 200.0}]  # AOV 100, COGS/ord 20
+    com = compute_breakeven_full(rows, fee_rate=0.075)   # 100-20-7.5-7 = 65.5
+    co = compute_breakeven_full(rows, fee_rate=0.05)     # 100-20-5-7   = 68.0
+    assert round(com["cpa"], 2) == 65.50
+    assert round(co["cpa"], 2) == 68.00                  # .co ha più margine (fee più bassa)
+    assert co["cpa"] > com["cpa"] and co["roas"] < com["roas"]
+
+
+def test_store_view_and_section_rendering():
+    from src.metrics.store_report import (
+        build_store_view,
+        format_store_section,
+        format_total_line,
+        store_breakeven,
+    )
+
+    be = store_breakeven([{"revenue": 1000.0, "num_orders": 10, "cogs_total": 200.0}], "com")
+    v = build_store_view("com", revenue=1000.0, orders=10, cogs_total=200.0, ads_spend=100.0,
+                         breakeven=be)
+    assert round(v["aov"], 2) == 100.0
+    assert round(v["payment_fees"], 2) == 75.0           # 7.5% × 1000
+    assert round(v["shipping_total"], 2) == 70.0         # $7 × 10
+    assert round(v["net_operating"], 2) == round(1000 - 200 - 70 - 75 - 100, 2)  # 555
+    sec = format_store_section(v, meta_daily={"roas": 3.0}, google_daily=None)
+    assert "🏪 *heritagering.com* _(USD)_" in sec
+    assert "Fees $75.00 (7.5%)" in sec
+    assert "📣 Ad spend $100.00" in sec
+    assert "_(own AOV/COGS)_" in sec
+    assert "📣 Meta ROAS 3.00x (break-even" in sec       # vs store break-even
+
+    # .co con 0 ordini -> "no orders"
+    v0 = build_store_view("co", revenue=0.0, orders=0, cogs_total=0.0, ads_spend=0.0, breakeven={})
+    assert format_store_section(v0) == "\n🌎 *heritagering.co* — no orders"
+
+    # TOTAL: net = operating − fixed (pot condiviso a livello totale)
+    total = format_total_line(revenue=1500.0, orders=15, net_operating=700.0, fixed_cost=404.53)
+    assert "Σ *TOTAL*" in total and "*$295.47*" in total  # 700 − 404.53
+
+
 def test_combine_daily_metrics_sums_and_fixed_once():
     day = "2026-09-11"
     m_com = compute_daily_metrics(day, [{"id": 1, "current_total_price": "100.00",

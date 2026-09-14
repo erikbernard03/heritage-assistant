@@ -14,7 +14,7 @@ Nessun LLM tocca i numeri.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
@@ -106,6 +106,25 @@ class GatheredDay:
     google_daily: Optional[dict]
     klaviyo_daily: Optional[dict]
     klaviyo_campaigns: list
+    store_views: list = field(default_factory=list)   # viste per-store (own-day break-even)
+
+
+def _store_views_live(stores: list) -> list:
+    """
+    Viste PER STORE per i report giornalieri/snapshot: break-even OWN-DAY per store (dai propri
+    revenue/ordini/COGS con la propria aliquota fee). `stores` = [(label, orders, handle, m)].
+    """
+    from src.metrics.store_report import build_store_view, store_breakeven
+
+    views = []
+    for label, _orders, _hmap, mm in stores:
+        be = store_breakeven(
+            [{"revenue": mm.revenue, "num_orders": mm.num_orders,
+              "cogs_total": mm.cogs_total, "day": mm.day}], label)
+        views.append(build_store_view(
+            label, mm.revenue, mm.num_orders, mm.cogs_total, mm.ads_spend, be,
+            shipping_total=mm.shipping_total, payment_fees=mm.payment_fees))
+    return views
 
 
 def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
@@ -195,6 +214,7 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
         tiktok_daily=tiktok_daily, tiktok_campaigns=tiktok_campaigns,
         google_daily=google_daily, klaviyo_daily=klaviyo_daily,
         klaviyo_campaigns=klaviyo_campaigns,
+        store_views=_store_views_live(stores),
     )
 
 
@@ -212,6 +232,7 @@ def build_daily_report(
     return g.metrics, format_report(
         g.metrics, g.meta_daily, g.meta_campaigns, g.klaviyo_daily, g.klaviyo_campaigns,
         g.tiktok_daily, g.tiktok_campaigns, g.google_daily, breakeven=breakeven,
+        store_views=g.store_views,
     )
 
 
@@ -264,49 +285,25 @@ def format_snapshot(
     Break-even dai numeri del giorno stesso (passato in `breakeven`).
     """
     m = g.metrics
-    be = breakeven or {}
-    cogs_po = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
-    gross = m.revenue - m.cogs_total
-
     out: list[str] = [header]
 
-    # ---- 1) KEY METRICS (compatto) ----
-    out.append("\n*1) KEY METRICS*")
-    out.append(f"💰 Revenue: *${m.revenue:,.2f}* · 🛒 Orders: *{m.num_orders}*")
-    out.append(f"🧾 AOV: ${m.aov:,.2f}")
-    out.append(f"🏷️ COGS: ${m.cogs_total:,.2f} (${cogs_po:,.2f}/order)")
-    out.append(f"📦 Gross profit (rev − COGS): *${gross:,.2f}*")
-    out.append(
-        f"💵 Net profit — operating *${m.net_profit_operativo:,.2f}* · "
-        f"net *${m.net_profit_netto:,.2f}*"
-    )
-    c_roas = f"{be['roas']:,.2f}x" if be.get("roas") else "n/a"
-    c_cpa = f"${be['cpa']:,.2f}" if be.get("cpa") is not None else "n/a"
-    out.append(f"⚖️ Break-even ROAS: {c_roas} · CPA: {c_cpa} (own day)")
-    prov = " · provisional" if provisional else ""
-    for line in (
-        _roas_cpa_line("📣", "Meta", g.meta_daily),
-        _roas_cpa_line("🎵", "TikTok", g.tiktok_daily),
-        _roas_cpa_line("🔎", "Google", g.google_daily),
-    ):
-        if line:
-            out.append(line + prov)
+    # ---- PER STORE (own-day) + TOTAL ----
+    from src.metrics.store_report import format_store_section, format_total_line
+
+    out.append("\n*PER STORE*")
+    for v in (g.store_views or []):
+        md = g.meta_daily if v["label"] == "com" else None
+        gd = g.google_daily if v["label"] == "com" else None
+        out.append(format_store_section(v, md, gd))
+    out.append(format_total_line(m.revenue, m.num_orders, m.net_profit_operativo,
+                                 m.fixed_cost_daily))
+    out.append(f"📈 Store CVR (total): {_fmt_cvr(m.store_cvr)}")
     if g.klaviyo_daily:
         kla_rev = float(g.klaviyo_daily.get("revenue") or 0)
-        out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
+        out.append(f"✉️ Klaviyo campaign revenue (.com): ${kla_rev:,.2f}")
 
-    # ---- 2) COST BREAKDOWN ----
-    out.append("\n*2) COST BREAKDOWN*")
-    out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
-    out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
-    out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
-    if m.ads_spend > 0:
-        out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")
-    if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
-        out.append(f"   • Fixed-costs allocation (full day): −${m.fixed_cost_daily:,.2f}")
-
-    # ---- 3) AD PLATFORMS (compatto: una riga per piattaforma) ----
-    out.append("\n*3) AD PLATFORMS*")
+    # ---- AD PLATFORMS (compatto: una riga per piattaforma, tutta .com) ----
+    out.append("\n*AD PLATFORMS*")
     plat: list[str] = []
     for emoji, name, d in (
         ("📣", "Meta", g.meta_daily),
@@ -1127,55 +1124,72 @@ def format_report(
     google_daily: Optional[dict] = None,
     breakeven: Optional[tuple] = None,
     header: Optional[str] = None,
+    store_views: Optional[list] = None,
 ) -> str:
     """
-    Report Telegram in 3 sezioni (Markdown, tutto in USD):
-      1) KEY METRICS  2) COST BREAKDOWN  3) PER-PLATFORM AD BREAKDOWN
-    Tutti i numeri sono deterministici (nessun LLM). `header` opzionale per i report
-    multi-giorno (es. 7 giorni); se assente, intestazione giornaliera standard.
+    Report Telegram (Markdown, USD). Con `store_views` (nuova separazione PER STORE):
+      PER STORE (una sezione con metriche complete per .com e .co) + riga TOTAL +
+      AD PLATFORMS (invariata, tutta .com). Senza store_views usa il vecchio layout combinato.
+    Tutti i numeri sono deterministici (nessun LLM).
     """
     out: list[str] = [header or f"📊 *Daily report — {m.day}* _(USD)_"]
 
-    # ---- SEZIONE 1 — KEY METRICS --------------------------------------------
-    out.append("\n*1) KEY METRICS*")
-    out.append(
-        f"💵 Net profit — operating *${m.net_profit_operativo:,.2f}* · "
-        f"net *${m.net_profit_netto:,.2f}*"
-    )
-    out.append(f"💰 Revenue: *${m.revenue:,.2f}*")
-    out.append(f"🛒 Orders: *{m.num_orders}*")
-    out.append(f"🧾 AOV: ${m.aov:,.2f}")
-    out.append(f"📈 Store CVR: {_fmt_cvr(m.store_cvr)}")
-    out.append(_breakeven_line(breakeven))
-    for line in (
-        _roas_cpa_line("📣", "Meta", meta_daily),
-        _roas_cpa_line("🎵", "TikTok", tiktok_daily),
-        _roas_cpa_line("🔎", "Google", google_daily),
-    ):
-        if line:
-            out.append(line)
-    if klaviyo_daily:
-        kla_rev = float(klaviyo_daily.get("revenue") or 0)
-        out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
-        flow_rev = klaviyo_daily.get("flow_revenue")
-        if flow_rev is not None:
-            out.append(f"🔁 Klaviyo flow revenue: ${float(flow_rev):,.2f}")
-    out.append(_margin_line(m))
+    if store_views:
+        # ---- PER STORE: ogni store con le SUE metriche + break-even proprio ----
+        from src.metrics.store_report import format_store_section, format_total_line
 
-    # ---- SEZIONE 2 — COST BREAKDOWN -----------------------------------------
-    # NB: Revenue (= total_price) include GIÀ IVA + spedizione incassata: quel denaro
-    # è dentro revenue e quindi nel net profit UNA SOLA VOLTA. Niente righe income
-    # separate (evita il doppio conteggio); le mostriamo solo come parte dei costi.
-    out.append("\n*2) COST BREAKDOWN*")
-    out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
-    out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
-    out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
-    if m.ads_spend > 0:
-        out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")
-    if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
-        out.append(f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}")
+        out.append("\n*PER STORE*")
+        for v in store_views:
+            # Meta/Google (tutto .com) mostrati solo nella sezione .com.
+            md = meta_daily if v["label"] == "com" else None
+            gd = google_daily if v["label"] == "com" else None
+            out.append(format_store_section(v, md, gd))
+        # ---- TOTAL: costi fissi = UN pot, applicato solo qui ----
+        out.append(format_total_line(m.revenue, m.num_orders, m.net_profit_operativo,
+                                     m.fixed_cost_daily))
+        out.append(f"📈 Store CVR (total): {_fmt_cvr(m.store_cvr)}")
+        if klaviyo_daily:
+            kla_rev = float(klaviyo_daily.get("revenue") or 0)
+            out.append(f"✉️ Klaviyo campaign revenue (.com): ${kla_rev:,.2f}")
+            flow_rev = klaviyo_daily.get("flow_revenue")
+            if flow_rev is not None:
+                out.append(f"🔁 Klaviyo flow revenue (.com): ${float(flow_rev):,.2f}")
+    else:
+        # ---- LEGACY combinato (fallback: nessun store_views) ----
+        out.append("\n*1) KEY METRICS*")
+        out.append(
+            f"💵 Net profit — operating *${m.net_profit_operativo:,.2f}* · "
+            f"net *${m.net_profit_netto:,.2f}*"
+        )
+        out.append(f"💰 Revenue: *${m.revenue:,.2f}*")
+        out.append(f"🛒 Orders: *{m.num_orders}*")
+        out.append(f"🧾 AOV: ${m.aov:,.2f}")
+        out.append(f"📈 Store CVR: {_fmt_cvr(m.store_cvr)}")
+        out.append(_breakeven_line(breakeven))
+        for line in (
+            _roas_cpa_line("📣", "Meta", meta_daily),
+            _roas_cpa_line("🎵", "TikTok", tiktok_daily),
+            _roas_cpa_line("🔎", "Google", google_daily),
+        ):
+            if line:
+                out.append(line)
+        if klaviyo_daily:
+            kla_rev = float(klaviyo_daily.get("revenue") or 0)
+            out.append(f"✉️ Klaviyo campaign revenue: ${kla_rev:,.2f}")
+            flow_rev = klaviyo_daily.get("flow_revenue")
+            if flow_rev is not None:
+                out.append(f"🔁 Klaviyo flow revenue: ${float(flow_rev):,.2f}")
+        out.append(_margin_line(m))
+        out.append("\n*2) COST BREAKDOWN*")
+        out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
+        out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
+        out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
+        if m.ads_spend > 0:
+            out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")
+        if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
+            out.append(f"   • Fixed-costs allocation: −${m.fixed_cost_daily:,.2f}")
 
-    # ---- SEZIONE 3 — PER-PLATFORM AD BREAKDOWN ------------------------------
+    # ---- SEZIONE 3 — PER-PLATFORM AD BREAKDOWN (invariata, tutta .com) ------
     # ROAS di riferimento per gli ads = CONTRIBUTION break-even (il target per andare in pari).
     be_roas = (breakeven or {}).get("roas")
     section3 = (
@@ -1185,7 +1199,8 @@ def format_report(
         + _format_klaviyo_section(klaviyo_daily, klaviyo_campaigns)
     )
     if section3.strip():
-        out.append("\n*3) AD PLATFORMS*")
+        # "3)" solo nel vecchio layout combinato (sezioni 1 & 2 sopra); nel layout per-store no.
+        out.append("\n*3) AD PLATFORMS*" if not store_views else "\n*AD PLATFORMS*")
         out.append(section3.rstrip("\n"))
 
     return "\n".join(out) + "\n"
@@ -1540,18 +1555,58 @@ def aggregate_week(
             klaviyo_daily, klaviyo_campaigns, breakeven, header)
 
 
+def period_store_views(store_daily_rows: list[dict], com_ads_spend: float) -> list:
+    """
+    Viste PER STORE di un periodo dalle righe store_daily: somma per store + break-even
+    CONTRIBUTION pooled sugli ULTIMI 4 GIORNI CON ORDINI di ciascuno store (con la sua
+    aliquota fee). Il .co usa solo i giorni in cui ha ordini. Ad spend: .com = totale
+    piattaforme (authoritative), .co = 0. [] se non ci sono righe store_daily (fallback legacy).
+    """
+    from src.metrics.store_report import build_store_view, store_breakeven
+
+    by_store: dict[str, dict] = {}
+    day_rows: dict[str, list] = {}
+    for r in store_daily_rows:
+        label = r.get("store") or "com"
+        acc = by_store.setdefault(label, {"revenue": 0.0, "orders": 0, "cogs": 0.0,
+                                          "shipping": 0.0, "fees": 0.0})
+        acc["revenue"] += _f(r.get("revenue"))
+        acc["orders"] += int(r.get("orders") or 0)
+        acc["cogs"] += _f(r.get("cogs_total"))
+        acc["shipping"] += _f(r.get("shipping_total"))
+        acc["fees"] += _f(r.get("payment_fees"))
+        day_rows.setdefault(label, []).append(r)
+
+    views = []
+    for label in ("com", "co"):
+        agg = by_store.get(label)
+        if agg is None:
+            continue
+        last4 = sorted([r for r in day_rows[label] if int(r.get("orders") or 0) > 0],
+                       key=lambda r: r["day"], reverse=True)[:4]
+        be_rows = [{"revenue": _f(r.get("revenue")), "num_orders": int(r.get("orders") or 0),
+                    "cogs_total": _f(r.get("cogs_total")), "day": r["day"]} for r in last4]
+        be = store_breakeven(be_rows, label)
+        ads = _f(com_ads_spend) if label == "com" else 0.0
+        views.append(build_store_view(
+            label, agg["revenue"], agg["orders"], agg["cogs"], ads, be,
+            shipping_total=agg["shipping"], payment_fees=agg["fees"]))
+    return views
+
+
 def aggregate_period(daily_rows: list[dict], store, header=None):
     """
     Aggrega un periodo (righe daily_metrics già filtrate) nella STESSA struttura di
     /report7: tira le righe piattaforma per [min,max giorno] e chiama aggregate_week.
 
-    Ritorna la tupla completa
+    Ritorna la tupla completa (10 elementi):
       (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
-       klaviyo_daily, klaviyo_campaigns, breakeven, header).
+       klaviyo_daily, klaviyo_campaigns, breakeven, header, store_views).
 
     È il punto di riuso condiviso dalla dashboard web: usando questa funzione i numeri
     della dashboard combaciano SEMPRE con i report Telegram (stessa aggregazione totals-based,
-    stessa Store CVR di periodo, stesso break-even 4-giorni).
+    stessa Store CVR di periodo, stesso break-even 4-giorni). `store_views` = viste per-store
+    (da store_daily) — [] se store_daily non popolata (fallback layout combinato).
     """
     day_strs = sorted(r["day"] for r in daily_rows)
     start, end = day_strs[0], day_strs[-1]
@@ -1562,10 +1617,17 @@ def aggregate_period(daily_rows: list[dict], store, header=None):
     klaviyo_rows = store.get_table_range("klaviyo_daily", start, end)
     klaviyo_camp_rows = store.get_table_range("klaviyo_campaigns", start, end)
 
-    return aggregate_week(
+    result = aggregate_week(
         daily_rows, meta_rows, tiktok_rows, google_rows, klaviyo_rows,
         meta_camp_rows, klaviyo_camp_rows, header=header,
     )
+    m = result[0]
+    try:
+        sd_rows = store.get_store_daily_range(start, end)
+    except Exception:  # noqa: BLE001 — store_daily assente (migration non eseguita)
+        sd_rows = []
+    store_views = period_store_views(sd_rows, m.ads_spend)
+    return (*result, store_views)
 
 
 _SOURCE_LABELS_MD = {
@@ -1621,7 +1683,7 @@ def _sources_line(store, start: str, end: str) -> str:
 def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
     """Renderizza un report multi-giorno dalle righe daily_metrics fornite (gap-safe)."""
     (m, meta_daily, meta_campaigns, tiktok_daily, google_daily,
-     klaviyo_daily, klaviyo_campaigns, breakeven, header) = aggregate_period(
+     klaviyo_daily, klaviyo_campaigns, breakeven, header, store_views) = aggregate_period(
         daily_rows, store, header=header,
     )
     # Klaviyo di PERIODO via query a finestra piena (campagne + flows). Se la query va a
@@ -1633,6 +1695,7 @@ def _render_multiday(daily_rows: list[dict], store, header=None) -> str:
     text = format_report(
         m, meta_daily, meta_campaigns, klaviyo_daily, klaviyo_campaigns,
         tiktok_daily, [], google_daily, breakeven=breakeven, header=header,
+        store_views=store_views,
     )
     return text + _sources_line(store, day_strs[0], day_strs[-1])
 

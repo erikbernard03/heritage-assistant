@@ -12,6 +12,7 @@ from src.metrics.profit import DailyMetrics, compute_daily_metrics
 from src.report import (
     GatheredDay,
     _own_day_breakeven,
+    _store_views_live,
     build_today_snapshot,
     build_yesterday_snapshot,
     format_snapshot,
@@ -25,10 +26,14 @@ def _order(oid, total, title, qty=1):
             "line_items": [{"id": oid * 10, "title": title, "quantity": qty}]}
 
 
-def _gathered(m):
-    return GatheredDay(metrics=m, meta_daily=None, meta_campaigns=[], tiktok_daily=None,
-                       tiktok_campaigns=[], google_daily=None, klaviyo_daily=None,
-                       klaviyo_campaigns=[])
+def _gathered(m, **kw):
+    # store_views con la sola vista .com (own-day break-even), come nel path live mono-store.
+    kw.setdefault("meta_daily", None)
+    kw.setdefault("google_daily", None)
+    kw.setdefault("klaviyo_daily", None)
+    return GatheredDay(metrics=m, meta_campaigns=[], tiktok_daily=None,
+                       tiktok_campaigns=[], klaviyo_campaigns=[],
+                       store_views=_store_views_live([("com", [], {}, m)]), **kw)
 
 
 def _two_gold_signet_day():
@@ -59,22 +64,18 @@ def test_snapshot_math_and_layout():
                            "📊 *Today so far — 2026-08-19 14:30 Rome* _(USD)_",
                            provisional=True)
     assert "Today so far — 2026-08-19 14:30 Rome" in text
-    assert "💰 Revenue: *$150.00*" in text
-    assert "🛒 Orders: *2*" in text
-    assert "🧾 AOV: $75.00" in text
-    assert "🏷️ COGS: $24.00 ($12.00/order)" in text
-    # gross profit = revenue − COGS = 150 − 24 = 126
-    assert "📦 Gross profit (rev − COGS): *$126.00*" in text
-    # net operating = 150 − 24 − 14(ship) − 11.25(fee) = 100.75
-    assert "operating *$100.75*" in text
-    # net netto = 100.75 − 203.90(fixed) = −103.15
-    assert "net *$-103.15*" in text
-    # break-even dal giorno stesso: 75/50.375 = 1.49x ; CPA $50.38
-    assert "⚖️ Break-even ROAS: 1.49x · CPA: $50.38 (own day)" in text
-    assert "Profit break-even" not in text
-    # sezioni + nota provvisoria
-    assert "*2) COST BREAKDOWN*" in text
-    assert "Fixed-costs allocation (full day): −$203.90" in text
+    # sezione PER STORE (.com) con le metriche complete dello store
+    assert "*PER STORE*" in text
+    assert "🏪 *heritagering.com*" in text
+    assert "💰 Revenue *$150.00* · 🛒 Orders *2* · 🧾 AOV $75.00" in text
+    assert "🏷️ COGS $24.00 ($12.00/order) · 📦 Shipping $14.00 · 💳 Fees $11.25 (7.5%)" in text
+    assert "💵 Net operating *$100.75*" in text
+    # break-even dello store (own AOV/COGS): 75/50.375 = 1.49x ; CPA $50.38
+    assert "⚖️ Break-even ROAS 1.49x · CPA $50.38 _(own AOV/COGS)_" in text
+    # riga TOTAL: net operating 100.75, net = 100.75 − 203.90(fixed) = −103.15
+    assert "Σ *TOTAL*" in text
+    assert "Net operating *$100.75*" in text
+    assert "Net _(− fixed $203.90)_ *$-103.15*" in text
     assert "today's ad attribution is provisional" in text
 
 
@@ -82,28 +83,26 @@ def test_snapshot_zero_orders_shows_na_and_no_provisional_note():
     m = compute_daily_metrics("2026-08-18", [], {}, resolver=RESOLVER)
     text = format_snapshot(_gathered(m), _own_day_breakeven(m),
                            "📊 *Yesterday — 2026-08-18* _(USD)_", provisional=False)
-    assert "🛒 Orders: *0*" in text
-    assert "🧾 AOV: $0.00" in text
-    assert "📦 Gross profit (rev − COGS): *$0.00*" in text
-    assert "⚖️ Break-even ROAS: n/a · CPA: n/a (own day)" in text
+    # store senza ordini -> "no orders"
+    assert "🏪 *heritagering.com* — no orders" in text
+    assert "Σ *TOTAL*" in text
     assert "_No ad-platform data yet._" in text
     assert "provisional" not in text          # nessuna nota per ieri
 
 
 def test_snapshot_platform_lines_and_provisional_flag():
     m = _two_gold_signet_day()
-    g = GatheredDay(
-        metrics=m,
+    g = _gathered(
+        m,
         meta_daily={"spend": 40.0, "revenue": 120.0, "roas": 3.0, "orders": 2, "cpa": 20.0},
-        meta_campaigns=[], tiktok_daily=None, tiktok_campaigns=[], google_daily=None,
-        klaviyo_daily={"revenue": 15.0}, klaviyo_campaigns=[],
+        klaviyo_daily={"revenue": 15.0},
     )
     text = format_snapshot(g, _own_day_breakeven(m), "H", provisional=True)
-    # riga compatta piattaforma in sezione 3
+    # riga compatta piattaforma nella sezione AD PLATFORMS
     assert "📣 Meta — spend $40.00 · rev $120.00 · ROAS 3.00x · 2 purch" in text
-    # riga ROAS/CPA in sezione 1 marcata provvisoria
-    assert "📣 Meta — ROAS 3.00x · CPA $20.00 · provisional" in text
-    assert "✉️ Klaviyo campaign revenue: $15.00" in text
+    # Meta ROAS vs break-even dello store nella sezione .com
+    assert "📣 Meta ROAS 3.00x (break-even 1.49x)" in text
+    assert "✉️ Klaviyo campaign revenue (.com): $15.00" in text
 
 
 def test_build_today_snapshot_wiring(monkeypatch):
@@ -113,8 +112,8 @@ def test_build_today_snapshot_wiring(monkeypatch):
     text = build_today_snapshot(now=now)
     assert "Today so far — 2026-08-19 14:30 Rome" in text
     assert "today's ad attribution is provisional" in text
-    # break-even del giorno stesso (own day), non 4-day
-    assert "(own day)" in text
+    # break-even per store dai propri numeri (own AOV/COGS)
+    assert "_(own AOV/COGS)_" in text
 
 
 def test_build_yesterday_snapshot_wiring(monkeypatch):
