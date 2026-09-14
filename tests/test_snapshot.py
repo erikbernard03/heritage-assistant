@@ -69,7 +69,8 @@ def test_snapshot_math_and_layout():
     assert "🏪 *heritagering.com*" in text
     assert "💰 Revenue *$150.00* · 🛒 Orders *2* · 🧾 AOV $75.00" in text
     assert "🏷️ COGS $24.00 ($12.00/order) · 📦 Shipping $14.00 · 💳 Fees $11.25 (7.5%)" in text
-    assert "💵 Net operating *$100.75*" in text
+    # net operating/profit NON compaiono nella sezione store — solo sulla riga TOTAL
+    assert "💵 Net operating" not in text
     # break-even dello store (own AOV/COGS): 75/50.375 = 1.49x ; CPA $50.38
     assert "⚖️ Break-even ROAS 1.49x · CPA $50.38 _(own AOV/COGS)_" in text
     # riga TOTAL: net operating 100.75, net = 100.75 − 203.90(fixed) = −103.15

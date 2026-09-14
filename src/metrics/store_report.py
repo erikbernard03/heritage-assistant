@@ -34,11 +34,13 @@ def store_fee_rate(label: str) -> float:
 def build_store_view(label: str, revenue: float, orders: int, cogs_total: float,
                      ads_spend: float, breakeven: dict,
                      shipping_total: Optional[float] = None,
-                     payment_fees: Optional[float] = None) -> dict:
+                     payment_fees: Optional[float] = None,
+                     store_sessions: Optional[int] = None) -> dict:
     """
     Vista di uno store. shipping/fees ricavati deterministicamente se non passati:
     shipping = $7 × ordini ; fees = aliquota_store × revenue. net_operating = revenue − COGS −
-    shipping − fees − ads. AOV e COGS/ordine dai propri totali.
+    shipping − fees − ads. AOV e COGS/ordine dai propri totali. store_cvr = ordini ÷ sessioni
+    dello store (None se sessioni non disponibili).
     """
     revenue = _f(revenue)
     orders = int(orders or 0)
@@ -48,6 +50,7 @@ def build_store_view(label: str, revenue: float, orders: int, cogs_total: float,
     ship = _f(shipping_total) if shipping_total is not None else settings.SPEDIZIONE_PER_ORDINE * orders
     fees = _f(payment_fees) if payment_fees is not None else rate * revenue
     net_op = revenue - cogs_total - ship - fees - ads_spend
+    sessions = int(store_sessions) if store_sessions not in (None, "") else None
     return {
         "label": label,
         "revenue": revenue,
@@ -60,6 +63,8 @@ def build_store_view(label: str, revenue: float, orders: int, cogs_total: float,
         "fee_rate": rate,
         "ads_spend": ads_spend,
         "net_operating": net_op,
+        "store_sessions": sessions,
+        "store_cvr": (orders / sessions) if sessions else None,
         "breakeven": breakeven or {},
     }
 
@@ -96,7 +101,11 @@ def format_store_section(view: dict, meta_daily: Optional[dict] = None,
     ]
     if view["ads_spend"] > 0:
         lines.append(f"   📣 Ad spend ${view['ads_spend']:,.2f}")
-    lines.append(f"   💵 Net operating *${view['net_operating']:,.2f}*")
+    # CVR proprio dello store (ordini ÷ sessioni dello store). Net operating/profit sono SOLO
+    # sulla riga Σ TOTAL.
+    cvr = view.get("store_cvr")
+    cvr_s = f"{cvr*100:.2f}%" if cvr else "n/a"
+    lines.append(f"   📈 CVR {cvr_s}")
     lines.append(f"   ⚖️ Break-even ROAS {be_roas} · CPA {be_cpa} _(own AOV/COGS)_")
     # Meta/Google ROAS confrontati col break-even DELLO STORE (solo dove passati).
     ref = be.get("roas")

@@ -123,7 +123,8 @@ def _store_views_live(stores: list) -> list:
               "cogs_total": mm.cogs_total, "day": mm.day}], label)
         views.append(build_store_view(
             label, mm.revenue, mm.num_orders, mm.cogs_total, mm.ads_spend, be,
-            shipping_total=mm.shipping_total, payment_fees=mm.payment_fees))
+            shipping_total=mm.shipping_total, payment_fees=mm.payment_fees,
+            store_sessions=mm.store_sessions))
     return views
 
 
@@ -1569,12 +1570,16 @@ def period_store_views(store_daily_rows: list[dict], com_ads_spend: float) -> li
     for r in store_daily_rows:
         label = r.get("store") or "com"
         acc = by_store.setdefault(label, {"revenue": 0.0, "orders": 0, "cogs": 0.0,
-                                          "shipping": 0.0, "fees": 0.0})
+                                          "shipping": 0.0, "fees": 0.0, "sessions": 0,
+                                          "has_sessions": False})
         acc["revenue"] += _f(r.get("revenue"))
         acc["orders"] += int(r.get("orders") or 0)
         acc["cogs"] += _f(r.get("cogs_total"))
         acc["shipping"] += _f(r.get("shipping_total"))
         acc["fees"] += _f(r.get("payment_fees"))
+        if r.get("store_sessions") is not None:
+            acc["sessions"] += int(r.get("store_sessions") or 0)
+            acc["has_sessions"] = True
         day_rows.setdefault(label, []).append(r)
 
     views = []
@@ -1588,9 +1593,11 @@ def period_store_views(store_daily_rows: list[dict], com_ads_spend: float) -> li
                     "cogs_total": _f(r.get("cogs_total")), "day": r["day"]} for r in last4]
         be = store_breakeven(be_rows, label)
         ads = _f(com_ads_spend) if label == "com" else 0.0
+        sessions = agg["sessions"] if agg["has_sessions"] else None
         views.append(build_store_view(
             label, agg["revenue"], agg["orders"], agg["cogs"], ads, be,
-            shipping_total=agg["shipping"], payment_fees=agg["fees"]))
+            shipping_total=agg["shipping"], payment_fees=agg["fees"],
+            store_sessions=sessions))
     return views
 
 

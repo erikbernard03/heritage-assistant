@@ -77,17 +77,24 @@ def test_store_view_and_section_rendering():
 
     be = store_breakeven([{"revenue": 1000.0, "num_orders": 10, "cogs_total": 200.0}], "com")
     v = build_store_view("com", revenue=1000.0, orders=10, cogs_total=200.0, ads_spend=100.0,
-                         breakeven=be)
+                         breakeven=be, store_sessions=200)
     assert round(v["aov"], 2) == 100.0
     assert round(v["payment_fees"], 2) == 75.0           # 7.5% × 1000
     assert round(v["shipping_total"], 2) == 70.0         # $7 × 10
-    assert round(v["net_operating"], 2) == round(1000 - 200 - 70 - 75 - 100, 2)  # 555
+    assert round(v["net_operating"], 2) == round(1000 - 200 - 70 - 75 - 100, 2)  # 555 (solo dato)
+    assert round(v["store_cvr"], 4) == 0.05              # 10 ordini ÷ 200 sessioni
     sec = format_store_section(v, meta_daily={"roas": 3.0}, google_daily=None)
     assert "🏪 *heritagering.com* _(USD)_" in sec
     assert "Fees $75.00 (7.5%)" in sec
     assert "📣 Ad spend $100.00" in sec
+    assert "📈 CVR 5.00%" in sec                          # CVR proprio dello store
+    assert "💵 Net operating" not in sec                 # net solo sulla riga TOTAL
     assert "_(own AOV/COGS)_" in sec
     assert "📣 Meta ROAS 3.00x (break-even" in sec       # vs store break-even
+    # sessioni non disponibili -> CVR n/a
+    v2 = build_store_view("com", 1000.0, 10, 200.0, 0.0, be, store_sessions=None)
+    assert v2["store_cvr"] is None
+    assert "📈 CVR n/a" in format_store_section(v2)
 
     # .co con 0 ordini -> "no orders"
     v0 = build_store_view("co", revenue=0.0, orders=0, cogs_total=0.0, ads_spend=0.0, breakeven={})
