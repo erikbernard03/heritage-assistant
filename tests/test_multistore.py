@@ -3,7 +3,13 @@ Secondo store: conversione revenue → USD (multi-valuta) e fee pagamenti per-st
 Deterministico, nessuna rete.
 """
 from config import settings
-from src.metrics.profit import compute_daily_metrics, order_revenue, order_revenue_usd
+from src.metrics.fixed_costs import daily_fixed_allocation
+from src.metrics.profit import (
+    combine_daily_metrics,
+    compute_daily_metrics,
+    order_revenue,
+    order_revenue_usd,
+)
 
 
 def test_order_revenue_usd_uses_shop_money_and_fx():
@@ -48,3 +54,27 @@ def test_com_defaults_unchanged():
 def test_per_store_fee_config():
     assert settings.PAYMENT_FEE_RATE_BY_STORE["com"] == 0.075
     assert settings.PAYMENT_FEE_RATE_BY_STORE["co"] == 0.05
+
+
+def test_combine_daily_metrics_sums_and_fixed_once():
+    day = "2026-09-11"
+    m_com = compute_daily_metrics(day, [{"id": 1, "current_total_price": "100.00",
+                                         "line_items": []}], {}, fee_rate=0.075)
+    m_com.store_sessions = 300
+    m_co = compute_daily_metrics(day, [{"id": 2, "current_total_price": "100.00",
+                                        "line_items": []}], {}, fee_rate=0.05,
+                                 currency_to_usd=1.0)
+    m_co.store_sessions = 40
+
+    c = combine_daily_metrics(day, [m_com, m_co])
+    assert round(c.revenue, 2) == 200.00
+    assert c.num_orders == 2
+    assert round(c.shipping_total, 2) == 14.00          # $7 × 2 (entrambi gli store)
+    assert round(c.payment_fees, 2) == 12.50            # 7.5 (.com) + 5 (.co) — aliquote per-store
+    # Costi fissi UNA sola volta (pot condiviso), non la somma delle due parti.
+    fixed = daily_fixed_allocation(day)
+    assert round(c.fixed_cost_daily, 2) == round(fixed, 2)
+    assert round(c.net_profit_operativo, 2) == round(200 - 14 - 12.5, 2)   # 173.50
+    assert round(c.net_profit_netto, 2) == round(c.net_profit_operativo - fixed, 2)
+    assert c.store_sessions == 340                       # sessioni sommate tra store
+    assert round(c.aov, 2) == 100.00

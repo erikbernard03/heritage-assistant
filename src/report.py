@@ -22,7 +22,11 @@ import pytz
 
 from config import settings
 from src.connectors.shopify import ShopifyConnector
-from src.metrics.profit import DailyMetrics, compute_daily_metrics
+from src.metrics.profit import (
+    DailyMetrics,
+    combine_daily_metrics,
+    compute_daily_metrics,
+)
 
 
 @dataclass
@@ -109,19 +113,15 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
     Esegue TUTTe le pull live per la finestra e calcola le metriche deterministiche.
     Condiviso da build_daily_report e dagli snapshot /today e /yesterday (stessi numeri).
     """
-    # Shopify: se fallisce/va in timeout, si degrada (0 ordini) e il report parte comunque.
+    # STORE 1 (.com): se fallisce/va in timeout, si degrada (0 ordini) e il report parte comunque.
     shop = None
     try:
         shop = ShopifyConnector()
-        orders = shop.get_orders(window.start, window.end)
+        orders = _orders_in_window(shop.get_orders(window.start, window.end), window)
         handle_map = shop.get_products_handle_map()
     except Exception as exc:  # noqa: BLE001 — il report deve arrivare comunque
         print(f"[report] Shopify pull failed: {exc}")
         orders, handle_map = [], {}
-
-    # Boundary fix: tieni solo gli ordini davvero nel giorno [start, end) di Roma (Shopify usa
-    # created_at_max INCLUSIVO -> un ordine a mezzanotte di confine finirebbe in due giorni).
-    orders = _orders_in_window(orders, window)
     # annota il giorno Europe/Rome su ogni ordine (per la persistenza)
     for o in orders:
         o["_day_rome"] = window.day_str
@@ -149,24 +149,46 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
         window.day_str, window.start.isoformat(), window.end.isoformat(), persist=persist
     )
 
-    metrics = compute_daily_metrics(
-        day=window.day_str,
-        orders=orders,
-        handle_map=handle_map,
-        # spesa ads totale (Meta + TikTok + Google, USD) sottratta dal net profit
+    # STORE 1 metrics: TUTTA la spesa ads (Meta+TikTok+Google) e la fee del .com.
+    m_com = compute_daily_metrics(
+        day=window.day_str, orders=orders, handle_map=handle_map,
         ads_spend=meta_spend + tiktok_spend + google_spend,
+        fee_rate=settings.PAYMENT_FEE_RATE_COM, currency_to_usd=1.0,
     )
+    m_com.store_sessions = _load_shopify_sessions(shop, window.day_str)
+    stores = [("com", orders, handle_map, m_com)]
 
-    # Store CVR: Shopify (sessioni) PRIMARIO per combaciare col dashboard; Triple Whale
-    # (pixelConversionRate, in google_daily.store_cvr) come fallback.
-    shopify_cvr = _load_shopify_cvr(shop, window.day_str)
-    tw_cvr = float(google_daily.get("store_cvr") or 0) if google_daily else 0.0
-    metrics.store_cvr = shopify_cvr if shopify_cvr is not None else tw_cvr
-    # Visitatori reali (sessioni Shopify): None se scope read_reports mancante -> stima in dashboard
-    metrics.store_sessions = _load_shopify_sessions(shop, window.day_str)
+    # STORE 2 (.co): organico (0 ads, no Klaviyo), fee del .co, revenue convertita in USD.
+    shop2 = ShopifyConnector.for_store_2()
+    if shop2 is not None:
+        try:
+            orders2 = _orders_in_window(shop2.get_orders(window.start, window.end), window)
+            handle_map2 = shop2.get_products_handle_map()
+        except Exception as exc:  # noqa: BLE001 — il .co non deve rompere il report
+            print(f"[report] Shopify .co pull failed: {exc}")
+            orders2, handle_map2 = [], {}
+        for o in orders2:
+            o["_day_rome"] = window.day_str
+        m_co = compute_daily_metrics(
+            day=window.day_str, orders=orders2, handle_map=handle_map2, ads_spend=0.0,
+            fee_rate=settings.PAYMENT_FEE_RATE_CO, currency_to_usd=shop2.currency_to_usd,
+        )
+        m_co.store_sessions = _load_shopify_sessions(shop2, window.day_str)
+        stores.append(("co", orders2, handle_map2, m_co))
+
+    # COMBINATO (Option A): somma degli store; costi fissi una volta; net ricalcolato.
+    metrics = combine_daily_metrics(window.day_str, [m for (_l, _o, _h, m) in stores])
+    # Store CVR COMBINATA: Σordini / Σsessioni (sessioni sommate tra store). Fallback: CVR
+    # Shopify del .com, poi Triple Whale.
+    if metrics.store_sessions and metrics.store_sessions > 0:
+        metrics.store_cvr = metrics.num_orders / metrics.store_sessions
+    else:
+        shopify_cvr = _load_shopify_cvr(shop, window.day_str)
+        tw_cvr = float(google_daily.get("store_cvr") or 0) if google_daily else 0.0
+        metrics.store_cvr = shopify_cvr if shopify_cvr is not None else tw_cvr
 
     if persist:
-        _persist(orders, handle_map, metrics, tw_summary=tw_summary)
+        _persist(metrics, stores, tw_summary=tw_summary)
 
     return GatheredDay(
         metrics=metrics, meta_daily=meta_daily, meta_campaigns=meta_campaigns,
@@ -758,45 +780,45 @@ def load_klaviyo_period(start_day: str, end_day: str) -> dict:
         return out
 
 
-def _persist_product_units(store, metrics: DailyMetrics) -> None:
-    """Classifica i line item del giorno e salva le unità per prodotto (best-effort)."""
+def _persist_product_units(store, metrics: DailyMetrics, store_label: str = "com") -> None:
+    """Classifica i line item del giorno e salva le unità per prodotto per lo store (best-effort)."""
     try:
         from src.metrics.product_units import units_by_key_from_line_items
 
         units = units_by_key_from_line_items(metrics.line_items)
-        store.upsert_product_units(metrics.day, units)
+        store.upsert_product_units(metrics.day, units, store=store_label)
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
-        print(f"[report] ⚠️ product_units non salvate per {metrics.day}: {exc}")
+        print(f"[report] ⚠️ product_units non salvate per {metrics.day}/{store_label}: {exc}")
 
 
-def _persist_sales_by_country(store, day: str, orders: list[dict]) -> None:
-    """Calcola le vendite per paese del giorno e le salva (best-effort)."""
+def _persist_sales_by_country(store, day: str, orders: list[dict], store_label: str = "com") -> None:
+    """Calcola le vendite per paese del giorno e le salva per lo store (best-effort)."""
     try:
         from src.metrics.sales_location import revenue_by_country
 
-        store.upsert_sales_by_country(day, revenue_by_country(orders))
+        store.upsert_sales_by_country(day, revenue_by_country(orders), store=store_label)
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
-        print(f"[report] ⚠️ sales_by_country non salvate per {day}: {exc}")
+        print(f"[report] ⚠️ sales_by_country non salvate per {day}/{store_label}: {exc}")
 
 
-def _persist_sales_by_hour(store, day: str, orders: list[dict]) -> None:
-    """Calcola le vendite per ORA (Europe/Rome) del giorno e le salva (best-effort)."""
+def _persist_sales_by_hour(store, day: str, orders: list[dict], store_label: str = "com") -> None:
+    """Calcola le vendite per ORA (Europe/Rome) del giorno e le salva per lo store (best-effort)."""
     try:
         from src.metrics.sales_timing import revenue_by_hour
 
-        store.upsert_sales_by_hour(day, revenue_by_hour(orders))
+        store.upsert_sales_by_hour(day, revenue_by_hour(orders), store=store_label)
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
-        print(f"[report] ⚠️ sales_by_hour non salvate per {day}: {exc}")
+        print(f"[report] ⚠️ sales_by_hour non salvate per {day}/{store_label}: {exc}")
 
 
-def _persist_sales_by_source(store, day: str, orders: list[dict]) -> None:
-    """Classifica gli ordini per sorgente last-click e salva (best-effort)."""
+def _persist_sales_by_source(store, day: str, orders: list[dict], store_label: str = "com") -> None:
+    """Classifica gli ordini per sorgente last-click e salva per lo store (best-effort)."""
     try:
         from src.metrics.sales_source import revenue_by_source
 
-        store.upsert_orders_by_source(day, revenue_by_source(orders))
+        store.upsert_orders_by_source(day, revenue_by_source(orders), store=store_label)
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
-        print(f"[report] ⚠️ orders_by_source non salvate per {day}: {exc}")
+        print(f"[report] ⚠️ orders_by_source non salvate per {day}/{store_label}: {exc}")
 
 
 def _persist_tw_pixel(store, day: str, tw_summary: Optional[dict]) -> None:
@@ -811,15 +833,15 @@ def _persist_tw_pixel(store, day: str, tw_summary: Optional[dict]) -> None:
         print(f"[report] ⚠️ tw_pixel non salvato per {day}: {exc}")
 
 
-def _persist_refunds(store, day: str, orders: list[dict]) -> None:
-    """Salva i refund Shopify del giorno (visibilità; best-effort)."""
+def _persist_refunds(store, day: str, orders: list[dict], store_label: str = "com") -> None:
+    """Salva i refund Shopify del giorno per lo store (visibilità; best-effort)."""
     try:
         from src.metrics.stripe_metrics import refunds_from_orders
 
         agg = refunds_from_orders(orders)
-        store.upsert_refunds_daily(day, agg.get(day, {"amount": 0.0, "count": 0}))
+        store.upsert_refunds_daily(day, agg.get(day, {"amount": 0.0, "count": 0}), store=store_label)
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
-        print(f"[report] ⚠️ refunds non salvati per {day}: {exc}")
+        print(f"[report] ⚠️ refunds non salvati per {day}/{store_label}: {exc}")
 
 
 def _persist_stripe(store, day: str) -> None:
@@ -892,32 +914,46 @@ def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, sto
             "range": f"{d0.isoformat()} → {d1.isoformat()}"}
 
 
-def _persist(orders: list[dict], handle_map: dict[int, str], metrics: DailyMetrics,
-             tw_summary: Optional[dict] = None) -> None:
-    """Salva su Supabase se configurato; non blocca il report in caso di assenza DB."""
+def _persist(combined: DailyMetrics, stores: list, tw_summary: Optional[dict] = None) -> None:
+    """
+    Salva su Supabase (Option A: multi-store combinato). `combined` = riga daily_metrics
+    sommata; `stores` = lista di (label, orders, handle_map, metrics) per store.
+    - daily_metrics + line_items + orders: COMBINATI (una riga/giorno; ID Shopify globalmente
+      unici, nessuna collisione tra store).
+    - product_units / sales_by_country / sales_by_hour / orders_by_source / refunds /
+      store_daily: PER STORE (colonna `store`).
+    - Stripe + tw_pixel: solo store .com (il .co usa Shopify Payments, niente Stripe/ads).
+    """
     try:
         from src.db.supabase_client import SupabaseStore
 
         store = SupabaseStore()
-        store.upsert_orders(orders, handle_map)
-        store.upsert_line_items(metrics)
-        store.upsert_daily_metrics(metrics)
-        _persist_product_units(store, metrics)
-        _persist_sales_by_country(store, metrics.day, orders)
-        _persist_sales_by_hour(store, metrics.day, orders)
-        _persist_sales_by_source(store, metrics.day, orders)  # last-click (Fase 9)
-        _persist_tw_pixel(store, metrics.day, tw_summary)      # pixel TW per canale (Fase 9)
-        _persist_refunds(store, metrics.day, orders)         # refund Shopify (Fase 8)
-        _persist_stripe(store, metrics.day)                  # Stripe daily + payout/dispute (Fase 8)
+        all_orders = [o for (_l, orders, _h, _m) in stores for o in orders]
+        merged_handle: dict[int, str] = {}
+        for (_l, _o, hmap, _m) in stores:
+            merged_handle.update(hmap or {})
+        store.upsert_orders(all_orders, merged_handle)
+        store.upsert_line_items(combined)
+        store.upsert_daily_metrics(combined)
+        _persist_tw_pixel(store, combined.day, tw_summary)   # pixel TW per canale (.com)
+        _persist_stripe(store, combined.day)                 # Stripe daily/payout/dispute (.com)
+        for label, orders, _hmap, m in stores:
+            _persist_product_units(store, m, store_label=label)
+            _persist_sales_by_country(store, combined.day, orders, store_label=label)
+            _persist_sales_by_hour(store, combined.day, orders, store_label=label)
+            _persist_sales_by_source(store, combined.day, orders, store_label=label)
+            _persist_refunds(store, combined.day, orders, store_label=label)
+            store.upsert_store_daily(combined.day, label, m)
+        labels = "+".join(l for (l, _o, _h, _m) in stores)
         print(
-            f"[report] daily_metrics PERSISTED day={metrics.day} "
-            f"orders={metrics.num_orders} revenue=${metrics.revenue:,.2f}"
+            f"[report] daily_metrics PERSISTED day={combined.day} stores={labels} "
+            f"orders={combined.num_orders} revenue=${combined.revenue:,.2f}"
         )
     except Exception as exc:  # il report deve arrivare comunque
         # ATTENZIONE: se questo fallisce, il giorno NON viene salvato -> buco in
         # daily_metrics (break-even/backfill ne risentono). Causa tipica: migration
-        # mancante (es. colonna store_cvr) o Supabase non raggiungibile.
-        print(f"[report] ⚠️ daily_metrics NON salvato per {metrics.day}: {exc}")
+        # mancante (es. colonna store) o Supabase non raggiungibile.
+        print(f"[report] ⚠️ daily_metrics NON salvato per {combined.day}: {exc}")
 
 
 def backfill_daily_metrics(
@@ -963,28 +999,51 @@ def backfill_daily_metrics(
     handle_map = shop.get_products_handle_map()  # uguale per tutti i giorni: una volta
     store = store or SupabaseStore()
 
+    # Secondo store (.co): stesso backfill Shopify-only, fee del .co, revenue in USD.
+    shop2 = ShopifyConnector.for_store_2()
+    handle_map2 = shop2.get_products_handle_map() if shop2 is not None else {}
+
     out: list[tuple] = []
     cur = d0
     while cur <= d1:
         w = day_window(cur)
         try:
-            orders = _orders_in_window(shop.get_orders(w.start, w.end), w)  # boundary fix
-            for o in orders:
-                o["_day_rome"] = w.day_str
-            m = compute_daily_metrics(
-                w.day_str, orders, handle_map, resolver=resolver, ads_spend=0.0
-            )
-            # Visitatori reali (sessioni Shopify) del giorno: None se scope read_reports
-            # mancante -> la colonna resta NULL e la dashboard stima (ordini÷CVR).
-            m.store_sessions = _load_shopify_sessions(shop, w.day_str)
-            store.upsert_orders(orders, handle_map)
+            def _store_day(sh, hmap, fee_rate, label):
+                orders = _orders_in_window(sh.get_orders(w.start, w.end), w)  # boundary fix
+                for o in orders:
+                    o["_day_rome"] = w.day_str
+                m = compute_daily_metrics(
+                    w.day_str, orders, hmap, resolver=resolver, ads_spend=0.0,
+                    fee_rate=fee_rate, currency_to_usd=sh.currency_to_usd,
+                )
+                m.store_sessions = _load_shopify_sessions(sh, w.day_str)
+                return (label, orders, hmap, m)
+
+            stores = [_store_day(shop, handle_map, settings.PAYMENT_FEE_RATE_COM, "com")]
+            if shop2 is not None:
+                stores.append(_store_day(shop2, handle_map2, settings.PAYMENT_FEE_RATE_CO, "co"))
+
+            m = combine_daily_metrics(w.day_str, [mm for (_l, _o, _h, mm) in stores])
+            if m.store_sessions and m.store_sessions > 0:
+                m.store_cvr = m.num_orders / m.store_sessions
+
+            # Persistenza: combinato (daily_metrics/line_items/orders) + per-store (granulari +
+            # store_daily). NB: il backfill è SOLO-Shopify -> niente Stripe/tw_pixel qui.
+            all_orders = [o for (_l, orders, _h, _mm) in stores for o in orders]
+            merged_handle: dict = {}
+            for (_l, _o, hh, _mm) in stores:
+                merged_handle.update(hh or {})
+            store.upsert_orders(all_orders, merged_handle)
             store.upsert_line_items(m)
             store.upsert_daily_metrics(m)
-            _persist_product_units(store, m)   # unità vendute per prodotto (Fase 5)
-            _persist_sales_by_country(store, w.day_str, orders)   # vendite per paese (Fase 6)
-            _persist_sales_by_hour(store, w.day_str, orders)      # vendite per ora (Fase 7)
-            _persist_sales_by_source(store, w.day_str, orders)    # last-click (Fase 9)
-            _persist_refunds(store, w.day_str, orders)            # refund Shopify (Fase 8)
+            for label, orders, _hh, mm in stores:
+                _persist_product_units(store, mm, store_label=label)
+                _persist_sales_by_country(store, w.day_str, orders, store_label=label)
+                _persist_sales_by_hour(store, w.day_str, orders, store_label=label)
+                _persist_sales_by_source(store, w.day_str, orders, store_label=label)
+                _persist_refunds(store, w.day_str, orders, store_label=label)
+                store.upsert_store_daily(w.day_str, label, mm)
+
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
                 (w.day_str, m.num_orders, round(m.revenue, 2),

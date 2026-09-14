@@ -303,6 +303,19 @@ def _compute_monthly() -> dict | None:
         dispute_rows = store.get_stripe_disputes()
     except Exception:  # noqa: BLE001 — tabelle Stripe assenti finché non si esegue la migration
         payout_rows, dispute_rows = [], []
+    # Per-store (sanity): {mese: {store: {revenue, orders, net_operating}}} da store_daily.
+    per_store_by_month: dict = {}
+    try:
+        for r in store.get_table_range("store_daily", "2000-01-01", today_iso):
+            mkey = str(r.get("day", ""))[:7]
+            skey = r.get("store") or "com"
+            acc = per_store_by_month.setdefault(mkey, {}).setdefault(
+                skey, {"revenue": 0.0, "orders": 0, "net_operating": 0.0})
+            acc["revenue"] += float(r.get("revenue") or 0)
+            acc["orders"] += int(r.get("orders") or 0)
+            acc["net_operating"] += float(r.get("net_profit_operativo") or 0)
+    except Exception:  # noqa: BLE001 — migration 016 non ancora eseguita
+        per_store_by_month = {}
     return {
         "months": months,
         "units_by_month": units_by_month(units_rows),
@@ -316,6 +329,7 @@ def _compute_monthly() -> dict | None:
         "disputes": dispute_rows,
         "source_by_month": sales_by_source_by_month(source_rows),
         "tw_pixel_by_month": tw_pixel_by_month(tw_pixel_rows),
+        "per_store_by_month": per_store_by_month,
     }
 
 
@@ -1009,7 +1023,10 @@ def _render_stripe_money(monthly: dict) -> None:
         })
     st.dataframe(pd.DataFrame(rec_rows), hide_index=True, use_container_width=True)
     st.caption("Stripe gross < Shopify revenue is expected (PayPal share doesn't flow through "
-               "Stripe). Payouts can differ from net by timing (money arrives days later).")
+               "Stripe). Payouts can differ from net by timing (money arrives days later). "
+               "**Note:** heritagering.co uses **Shopify Payments** (not our Stripe), so .co "
+               "revenue never appears in this Stripe reconciliation — the Shopify-rev column "
+               "above is combined (.com + .co) while Stripe columns are .com only.")
 
     # 2) Costo di pagamento REALE vs stima: fee Stripe + surcharge Shopify (invisibile a Stripe).
     surcharge = settings.SHOPIFY_GATEWAY_SURCHARGE_PCT
@@ -1272,6 +1289,36 @@ def _render_sales_source_period(data: dict) -> None:
     _render_three_way(meta_self, google_self, tw_pixel, by_source)
 
 
+def _render_per_store(monthly: dict) -> None:
+    """Sanity 'Per store': revenue, ordini, net operating per store per mese (dati merged altrove)."""
+    from src.dashboard.monthly import month_label
+
+    per_store = monthly.get("per_store_by_month") or {}
+    # Mostra solo se esiste più di uno store (altrimenti è ridondante col resto).
+    stores = sorted({s for m in per_store.values() for s in m})
+    if len(stores) < 2:
+        return
+    st.subheader("🏪 Per store (sanity check)")
+    st.caption("Everything else on this page is MERGED across stores. This table keeps the raw "
+               "per-store split (from store_daily): revenue, orders, net operating (excl. fixed).")
+    _labels = {"com": "heritagering.com", "co": "heritagering.co"}
+    rows = []
+    for mn in sorted(per_store, reverse=True):
+        for s in stores:
+            v = per_store[mn].get(s)
+            if not v:
+                continue
+            rows.append({
+                "Month": month_label(mn),
+                "Store": _labels.get(s, s),
+                "Revenue": round(v["revenue"], 2),
+                "Orders": int(v["orders"]),
+                "Net operating": round(v["net_operating"], 2),
+            })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
 def _render_sales_source_monthly(monthly: dict) -> None:
     """Sezione Sorgenti (Monthly tab): last-click + confronto a 3 vie, per mese."""
     from src.dashboard.monthly import month_label
@@ -1401,6 +1448,7 @@ def _render_monthly_tab() -> None:
     _render_weekday_profit(months)                                        # best/worst weekday
     _render_sales_by_hour(monthly.get("sales_by_hour_by_month") or {})    # best/worst hour
     _render_stripe_money(monthly)                                         # Stripe / Money
+    _render_per_store(monthly)                                           # Per store (Fase 10)
     _render_goals(months)                                                # 11
 
 

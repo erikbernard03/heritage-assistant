@@ -227,6 +227,40 @@ def compute_daily_metrics(
     return m
 
 
+def combine_daily_metrics(day: str, parts: list["DailyMetrics"]) -> DailyMetrics:
+    """
+    Somma le metriche PER-STORE in un'unica riga COMBINATA del giorno (Option A: totali combinati).
+    - revenue/COGS/shipping/fee/ads/ordini/line_items: sommati (le fee sono già per-store);
+    - quota costi fissi: UNA sola volta (pot condiviso, DATATA) — NON sommata dalle parti;
+    - net profit ricalcolato dai componenti combinati;
+    - sessioni: somma di quelle disponibili (None se nessuno store le espone);
+    - store_cvr: lasciato al chiamante (dipende dalle sessioni combinate).
+    """
+    m = DailyMetrics(day=day)
+    for p in parts:
+        m.revenue += p.revenue
+        m.cogs_total += p.cogs_total
+        m.shipping_total += p.shipping_total
+        m.payment_fees += p.payment_fees
+        m.ads_spend += p.ads_spend
+        m.num_orders += p.num_orders
+        m.shipping_collected += p.shipping_collected
+        m.tax_collected += p.tax_collected
+        m.line_items.extend(p.line_items)
+    sess = [p.store_sessions for p in parts if p.store_sessions is not None]
+    m.store_sessions = sum(sess) if sess else None
+    if settings.INCLUDI_COSTI_FISSI_IN_NET_PROFIT:
+        from src.metrics.fixed_costs import daily_fixed_allocation
+
+        m.fixed_cost_daily = daily_fixed_allocation(day)   # pot condiviso, una volta
+    m.net_profit_operativo = (
+        m.revenue - m.cogs_total - m.shipping_total - m.payment_fees - m.ads_spend
+    )
+    m.net_profit_netto = m.net_profit_operativo - m.fixed_cost_daily
+    m.aov = (m.revenue / m.num_orders) if m.num_orders else 0.0
+    return m
+
+
 def compute_breakeven_full(prev_days_rows: list[dict]) -> dict:
     """
     Break-even CONTRIBUTION e PROFIT sui totali POOLED della finestra (codice puro).

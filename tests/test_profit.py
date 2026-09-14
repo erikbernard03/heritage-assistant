@@ -216,6 +216,8 @@ def test_load_breakeven_single_day_still_works():
 class _FakeShop:
     """Shop fittizio: handle_map fisso + un ordine round-signet per ogni giorno."""
 
+    currency_to_usd = 1.0        # store in USD (nessuna conversione)
+
     def __init__(self):
         self.handle_map = {111: "personalized-gold-plated-signet-ring"}
 
@@ -251,8 +253,11 @@ class _CaptureStore:
     def upsert_daily_metrics(self, metrics):
         self.written[metrics.day] = metrics
 
-    def upsert_product_units(self, day, units_by_key):
+    def upsert_product_units(self, day, units_by_key, store="com"):
         self.units[day] = dict(units_by_key)
+
+    def upsert_store_daily(self, day, store, metrics):
+        pass
 
 
 def test_backfill_recomputes_cogs_from_current_config():
