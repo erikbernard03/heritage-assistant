@@ -30,6 +30,48 @@ title_rules:
   - keywords: [ring, size, adjuster]                # Ring Size Adjuster Kit
     cogs: 1
 
+# ---- Match per TITOLO ESATTO (case-insensitive, titolo Shopify completo) ----
+# Ha PRIORITÀ sulle title_rules per FAMIGLIA: un titolo elencato qui NON deve mai
+# cadere nella famiglia generica (es. "Tutto Passa Signet Ring (PRE-ORDER)" NON deve
+# prendere una regola signet; "Fleur-de-Lis Tile Bracelet (PRE-ORDER)" NON deve prendere
+# la famiglia Fleur-de-Lis). Costo per unità, USD, uguale per ogni variante (colore/taglia).
+# Vale per ENTRAMBI gli store (resolver condiviso).
+exact_titles:
+  # Necklaces — $3.50
+  "Compass Necklace (PRE-ORDER)": 3.50
+  "Onyx Crown Necklace (PRE-ORDER)": 3.50
+  "Hammered Cross Necklace (PRE-ORDER)": 3.50
+  "Turquoise Signet Necklace (PRE-ORDER)": 3.50
+  "Equestrian Medallion Necklace (PRE-ORDER)": 3.50
+  "Tutto Passa Necklace (PRE-ORDER)": 3.50
+  "Con Calma Necklace (PRE-ORDER)": 3.50
+  # Bracelets — $3.00
+  "Fleur-de-Lis Tile Bracelet (PRE-ORDER)": 3.00
+  "Gold Hook Bracelet (PRE-ORDER)": 3.00
+  "Navy Leather Cuff (PRE-ORDER)": 3.00
+  "Black Cord Cuff (PRE-ORDER)": 3.00
+  "Navy Mariner Bracelet (PRE-ORDER)": 3.00
+  "Black Shackle Bracelet (PRE-ORDER)": 3.00
+  "Regatta Bracelet (PRE-ORDER)": 3.00
+  "Rope Bracelet (PRE-ORDER)": 3.00
+  "Cuban Bracelet (PRE-ORDER)": 3.00
+  # Rings — $3.00
+  "Tutto Passa Signet Ring (PRE-ORDER)": 3.00
+  "Dolce Vita Signet Ring (PRE-ORDER)": 3.00
+  "Fleur-de-Lis Signet Ring (PRE-ORDER)": 3.00
+  "Anchor Signet Ring (PRE-ORDER)": 3.00
+  # Cufflinks — $3.00
+  "Sea Turtle Cufflinks": 3.00
+  "Lobster Cufflinks": 3.00
+  "Black Onyx Cufflinks": 3.00
+  "Sailboat Cufflinks": 3.00
+  "Black Striped Cufflinks": 3.00
+  "Race Car Cufflinks": 3.00
+  "Four Aces Cufflinks": 3.00
+  "Airplane Cufflinks": 3.00
+  # Personalized cufflinks — $15.00
+  "Personalized Cufflinks": 15.00
+
 # ---- Override per HANDLE esatto (priorità massima sulle regole) ----
 custom_products:
   personalized-sterling-silver-signet-ring: 48
