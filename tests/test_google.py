@@ -160,7 +160,7 @@ def test_refresh_tw_range_iterates_days_and_overwrites(monkeypatch):
 
     monkeypatch.setattr(S, "TRIPLEWHALE_API_KEY", "x")           # supera il guard
     monkeypatch.setattr(R, "_fetch_tw_summary", lambda s, e: {"day": s})
-    monkeypatch.setattr(R, "_load_google", lambda day, summary, persist: ({"orders": 19}, 300.0))
+    monkeypatch.setattr(R, "_refresh_google_day", lambda store, day, summary: ("updated", 300.0, 19))
     monkeypatch.setattr(R, "_load_tiktok", lambda day, summary, persist: (None, [], 145.0))
     monkeypatch.setattr(R, "_persist_tw_pixel", lambda store, day, summary: None)
 
@@ -177,3 +177,52 @@ def test_refresh_tw_range_reports_error_when_no_summary(monkeypatch):
     monkeypatch.setattr(R, "_fetch_tw_summary", lambda s, e: None)   # pull fallita
     out = R.refresh_tw_range("2026-10-01", "2026-10-01", store=object())
     assert out[0][0] == "2026-10-01" and out[0][1] == "ERR"
+
+
+class _FakeGoogleStore:
+    """Store finto per il guard NON-ZERO di _refresh_google_day."""
+    def __init__(self, stored):
+        self._stored = stored
+        self.written = None
+
+    def get_google_daily_for_day(self, day):
+        return self._stored
+
+    def upsert_google_daily(self, g):
+        self.written = g.as_db_row()
+
+
+_SUMMARY_NEW = {"data": [
+    {"metricId": "ga_adCost", "values": {"current": 300.0}},
+    {"metricId": "ga_transactions_adGroup", "values": {"current": 19}},   # nuovo account
+    {"metricId": "ga_all_transactions_adGroup", "values": {"current": 0}},
+    {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 1200.0}},
+]}
+_SUMMARY_ZERO = {"data": [{"metricId": "pixelConversionRate", "values": {"current": 0.44}}]}  # no Google
+
+
+def test_guard_keeps_stored_nonzero_when_tw_returns_zero():
+    # Giorno vecchio-account: TW ora dà 0 -> si TIENE il valore memorizzato, nessun upsert.
+    from src.report import _refresh_google_day
+    store = _FakeGoogleStore({"spend": 210.5, "orders": 12, "revenue": 673.6})
+    status, spend, orders = _refresh_google_day(store, "2026-09-10", _SUMMARY_ZERO)
+    assert status == "kept" and spend == 210.5 and orders == 12
+    assert store.written is None               # NON sovrascritto
+
+
+def test_guard_updates_when_tw_nonzero():
+    # Giorno nuovo-account: TW ha dati -> aggiorna (conversioni via fallback = 19).
+    from src.report import _refresh_google_day
+    store = _FakeGoogleStore({"spend": 0.0, "orders": 0, "revenue": 0.0})
+    status, spend, orders = _refresh_google_day(store, "2026-10-02", _SUMMARY_NEW)
+    assert status in ("updated", "filled") and orders == 19 and round(spend, 2) == 300.0
+    assert store.written["orders"] == 19
+
+
+def test_guard_fills_when_stored_zero_and_tw_zero():
+    # Stored 0/mancante e TW 0 -> si scrive comunque (giorno realmente senza Google).
+    from src.report import _refresh_google_day
+    store = _FakeGoogleStore(None)
+    status, spend, orders = _refresh_google_day(store, "2026-09-20", _SUMMARY_ZERO)
+    assert status == "filled" and orders == 0 and spend == 0.0
+    assert store.written is not None

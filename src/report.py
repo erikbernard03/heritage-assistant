@@ -565,6 +565,78 @@ def refresh_meta_range(
     return out
 
 
+def _refresh_google_day(store, day: str, summary: dict) -> tuple[str, float, int]:
+    """
+    Calcola Google dal `summary` e lo persiste con la REGOLA DI SICUREZZA NON-ZERO:
+    NON sovrascrivere MAI un google_daily memorizzato NON-ZERO con un risultato TW tutto a
+    zero. Motivo: il vecchio account Google è scollegato, quindi TW ora ritorna 0 per i giorni
+    serviti dal vecchio account — quei valori memorizzati sono corretti e vanno TENUTI.
+    Si aggiorna solo se TW ha dati non-zero, oppure se il valore memorizzato è 0/mancante.
+
+    Ritorna (status, spend, orders) con status in {'updated','filled','kept'}.
+    """
+    from src.connectors.triplewhale import extract_google, extract_store_cvr
+    from src.metrics.google import compute_google_metrics
+
+    google = extract_google(summary)
+    cvr = extract_store_cvr(summary)
+    computed = compute_google_metrics(day, google or {}, store_cvr=cvr or 0.0)
+    tw_zero = (computed.spend == 0 and computed.orders == 0 and computed.revenue == 0)
+
+    stored = store.get_google_daily_for_day(day)
+    stored_nonzero = bool(stored) and (
+        float(stored.get("spend") or 0) > 0
+        or int(stored.get("orders") or 0) > 0
+        or float(stored.get("revenue") or 0) > 0
+    )
+    if tw_zero and stored_nonzero:
+        # giorno vecchio-account: TW ora dà 0 -> TIENI il valore memorizzato.
+        return ("kept", float(stored.get("spend") or 0), int(stored.get("orders") or 0))
+    store.upsert_google_daily(computed)
+    return (("updated" if stored_nonzero else "filled"), computed.spend, computed.orders)
+
+
+def refresh_google_range(
+    start_iso: str, end_iso: str, max_days: int = 90, store=None
+) -> list[tuple]:
+    """
+    Ri-tira Google da Triple Whale per OGNI giorno (Europe/Rome) in [start_iso, end_iso] e
+    aggiorna google_daily con la REGOLA NON-ZERO (vedi _refresh_google_day): i giorni serviti
+    dal VECCHIO account (TW ora = 0) mantengono i valori memorizzati; i giorni nuovi (TW
+    non-zero) o a 0/mancanti vengono riempiti. SOLO google_daily (non tiktok/pixel).
+
+    Ritorna una lista (giorno, spend_usd|'ERR', orders|messaggio, status) per il riepilogo.
+    """
+    from src.db.supabase_client import SupabaseStore
+
+    if not settings.TRIPLEWHALE_API_KEY:
+        raise RuntimeError("Triple Whale non configurato (TRIPLEWHALE_API_KEY).")
+
+    d0 = date.fromisoformat(start_iso)
+    d1 = date.fromisoformat(end_iso)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days + 1 > max_days:
+        raise ValueError(f"Range troppo ampio (> {max_days} giorni).")
+
+    store = store or SupabaseStore()
+    out: list[tuple] = []
+    cur = d0
+    while cur <= d1:
+        day = cur.isoformat()
+        try:
+            summary = _fetch_tw_summary(day, day)
+            if summary is None:
+                out.append((day, "ERR", "no Summary (TW call failed)", "kept"))
+            else:
+                status, spend, orders = _refresh_google_day(store, day, summary)
+                out.append((day, round(spend, 2), int(orders), status))
+        except Exception as exc:  # noqa: BLE001
+            out.append((day, "ERR", str(exc)[:80], "kept"))
+        cur += timedelta(days=1)
+    return out
+
+
 def refresh_tw_range(
     start_iso: str, end_iso: str, max_days: int = 60, store=None
 ) -> list[tuple]:
@@ -601,11 +673,11 @@ def refresh_tw_range(
             if summary is None:
                 out.append((day, "ERR", "no Summary (TW call failed)", "-"))
             else:
-                g, g_spend = _load_google(day, summary, persist=True)
+                # Google con la REGOLA NON-ZERO (non azzera i giorni del vecchio account).
+                _gstatus, g_spend, g_orders = _refresh_google_day(store, day, summary)
                 _t, _camps, t_spend = _load_tiktok(day, summary, persist=True)
                 _persist_tw_pixel(store, day, summary)   # tw_pixel_daily (orders Google via fallback)
-                g_orders = int((g or {}).get("orders") or 0)
-                out.append((day, round(g_spend, 2), g_orders, round(t_spend, 2)))
+                out.append((day, round(g_spend, 2), int(g_orders), round(t_spend, 2)))
         except Exception as exc:  # noqa: BLE001
             out.append((day, "ERR", str(exc)[:80], "-"))
         cur += timedelta(days=1)
