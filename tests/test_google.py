@@ -31,7 +31,8 @@ def test_extract_google_from_metric_tiles():
     g = extract_google(_summary_with_google())
     assert g is not None
     assert round(g["spend"], 2) == 210.50
-    assert g["roas"] == 3.2
+    # ROAS ricalcolato da revenue÷spend corretti (non ga_ROAS): 673.6/210.5
+    assert round(g["roas"], 4) == round(673.6 / 210.5, 4)
     assert g["cpa"] == 18.0
     assert g["clicks"] == 640
     assert g["impressions"] == 51000
@@ -40,33 +41,51 @@ def test_extract_google_from_metric_tiles():
     assert g["currency"] == "USD"
 
 
-def test_google_conversions_fallback_to_ga_transactions_adgroup():
-    # Nuovo account: id primario presente ma = 0 -> si usa ga_transactions_adGroup (=19).
+def test_google_ad_attributed_ids_override_sitewide():
+    # NUOVO account: googleConversionValue/googleConversions sono i numeri Google Ads reali;
+    # i vecchi ga_*_transactions* ora sono SITE-WIDE (gonfiati) e NON devono essere usati.
     summary = {"data": [
-        {"metricId": "ga_adCost", "values": {"current": 300.0}},
-        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 0}},
-        {"metricId": "ga_transactions_adGroup", "values": {"current": 19}},
-        {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 1200.0}},
+        {"metricId": "ga_adCost", "values": {"current": 609.06}},
+        {"metricId": "ga_ROAS", "values": {"current": 22.86}},               # site-wide -> ignorato
+        {"metricId": "googleConversions", "values": {"current": 7}},         # ad-attributed
+        {"metricId": "googleConversionValue", "values": {"current": 605.04}},  # ad-attributed
+        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 30}},          # site-wide
+        {"metricId": "ga_transactions_adGroup", "values": {"current": 30}},              # site-wide
+        {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 10101.0}},  # site-wide
     ]}
     g = extract_google(summary)
-    assert g["orders"] == 19
-    assert round(g["revenue"], 2) == 1200.0          # revenue id invariato
-    # pixel/tw_pixel: anche la vista per-canale Google usa la stessa catena di fallback
+    assert g["orders"] == 7.0                       # non 30
+    assert round(g["revenue"], 2) == 605.04         # non 10101
+    assert round(g["roas"], 2) == round(605.04 / 609.06, 2)   # ~0.99x, non 22.86x
     px = extract_pixel_attribution(summary)
-    assert px["google"]["orders"] == 19.0
-    assert round(px["google"]["revenue"], 2) == 1200.0
+    assert px["google"]["orders"] == 7.0 and round(px["google"]["revenue"], 2) == 605.04
 
 
-def test_google_conversions_prefers_primary_when_nonzero():
-    # Vecchio account (o giorni normali): il primario ≠ 0 vince, il fallback è ignorato.
+def test_google_ad_attributed_present_zero_not_shadowed_by_sitewide():
+    # Giorno nuovo-account con 0 conversioni reali: l'id ad-attribuito PRESENTE a 0 vince,
+    # NON si ripiega sul site-wide.
     summary = {"data": [
-        {"metricId": "ga_adCost", "values": {"current": 300.0}},
-        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 12}},
-        {"metricId": "ga_transactions_adGroup", "values": {"current": 19}},
+        {"metricId": "ga_adCost", "values": {"current": 150.0}},
+        {"metricId": "googleConversions", "values": {"current": 0}},
+        {"metricId": "googleConversionValue", "values": {"current": 0}},
+        {"metricId": "ga_transactions_adGroup", "values": {"current": 12}},
+        {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 800.0}},
+    ]}
+    g = extract_google(summary)
+    assert g["orders"] == 0.0 and g["revenue"] == 0.0
+
+
+def test_google_old_account_falls_back_when_new_ids_absent():
+    # Vecchio account: i nuovi id sono ASSENTI -> si usano i vecchi (che allora erano corretti).
+    summary = {"data": [
+        {"metricId": "ga_adCost", "values": {"current": 210.50}},
+        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 0}},
+        {"metricId": "ga_transactions_adGroup", "values": {"current": 19}},     # non-zero fallback
         {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 673.6}},
     ]}
-    assert extract_google(summary)["orders"] == 12
-    assert extract_pixel_attribution(summary)["google"]["orders"] == 12.0
+    g = extract_google(summary)
+    assert g["orders"] == 19 and round(g["revenue"], 2) == 673.6
+    assert extract_pixel_attribution(summary)["google"]["orders"] == 19.0
 
 
 def test_extract_google_cpa_fallback_to_googleAllCpa():
@@ -89,7 +108,7 @@ def test_compute_google_metrics_usd():
     assert c.account_currency == "USD"
     assert c.fx_to_usd == 1.0
     assert round(c.spend, 2) == 210.50
-    assert c.roas == 3.2
+    assert round(c.roas, 4) == round(673.6 / 210.5, 4)   # ROAS da revenue÷spend corretti
     assert c.cpa == 18.0
     assert c.orders == 12
     assert round(c.store_cvr, 4) == 0.0234

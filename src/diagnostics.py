@@ -371,6 +371,25 @@ def google_diagnostic() -> str:
             out.append(f"✅ Spend: ${c.spend:,.2f} · ROAS: {c.roas:,.2f}x")
             out.append(f"Revenue: ${c.revenue:,.2f} · conversions: {c.orders} · CPA: ${c.cpa:,.2f}")
             out.append(f"Impressions: {c.impressions:,} · Clicks: {c.clicks:,}")
+            # Quale id AD-ATTRIBUITO ha deciso conversioni/revenue (vs i vecchi site-wide).
+            from src.connectors.triplewhale import (
+                GOOGLE_ORDERS_NEW_IDS,
+                GOOGLE_ORDERS_OLD_IDS,
+                GOOGLE_REVENUE_NEW_IDS,
+                GOOGLE_REVENUE_OLD_IDS,
+                _resolve_google_metric,
+                collect_metric_values,
+            )
+            gv = collect_metric_values(summary)
+            o_val, o_id = _resolve_google_metric(gv, GOOGLE_ORDERS_NEW_IDS, GOOGLE_ORDERS_OLD_IDS)
+            r_val, r_id = _resolve_google_metric(gv, GOOGLE_REVENUE_NEW_IDS, GOOGLE_REVENUE_OLD_IDS)
+            out.append(f"   resolved conv={o_val:g} [{o_id}] · revenue=${r_val:,.2f} [{r_id}]")
+            out.append("   candidates: " + " · ".join(
+                f"{mid}={gv[mid]:g}" for mid in
+                (*GOOGLE_ORDERS_NEW_IDS, *GOOGLE_ORDERS_OLD_IDS,
+                 *GOOGLE_REVENUE_NEW_IDS, *GOOGLE_REVENUE_OLD_IDS, "ga_ROAS", "googleCpa")
+                if mid in gv))
+            out.append("   ↳ validate vs Google Ads UI (ad-attributed), NOT site-wide GA.")
             cvr_str = f"{c.store_cvr * 100:.2f}%" if c.store_cvr > 0 else "n/a"
             dbg = store_cvr_debug(summary)
             method = (

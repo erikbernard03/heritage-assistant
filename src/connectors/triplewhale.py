@@ -207,11 +207,37 @@ GOOGLE_METRIC_IDS = {
 }
 _GOOGLE_CPA_ALT = "googleAllCpa"
 
-# Conversioni Google: catena di fallback NON-ZERO. ga_all_transactions_adGroup è l'id
-# primario (funzionava sul vecchio account Google Ads); sul NUOVO account torna 0 e le
-# conversioni arrivano su ga_transactions_adGroup. Si prende il primo id con valore ≠ 0.
-# (La revenue resta ga_all_transactionsRevenue_adGroup, che funziona su entrambi.)
-GOOGLE_ORDERS_IDS = ("ga_all_transactions_adGroup", "ga_transactions_adGroup")
+# Conversioni/Revenue Google: id AD-ATTRIBUITI (numeri PROPRI di Google Ads) PRIMA, id vecchi
+# come FALLBACK solo se i nuovi sono ASSENTI (i giorni del vecchio account devono risolvere).
+# Dopo il cambio account, ga_*_transactions*_adGroup ritornano le transazioni SITE-WIDE di
+# Google Analytics (non ad-attribuite) -> gonfiano revenue/conversioni. googleConversionValue
+# / googleConversions sono i numeri attribuiti da Google Ads (validati vs UI: conv 7, $605.04).
+GOOGLE_REVENUE_NEW_IDS = ("googleConversionValue",)
+GOOGLE_REVENUE_OLD_IDS = ("ga_all_transactionsRevenue_adGroup",)
+GOOGLE_ORDERS_NEW_IDS = ("googleConversions", "ga_conversions")
+GOOGLE_ORDERS_OLD_IDS = ("ga_all_transactions_adGroup", "ga_transactions_adGroup")
+
+
+def _resolve_google_metric(vals: dict, new_ids, old_ids) -> tuple[float, Optional[str]]:
+    """
+    Ritorna (valore, metricId) per una metrica Google con priorità AD-ATTRIBUITA:
+      1. primo id NUOVO PRESENTE (anche se 0): è l'autorevole di Google Ads e NON deve essere
+         oscurato dai vecchi id site-wide;
+      2. altrimenti, tra i VECCHI id, il primo ≠ 0 (altrimenti il primo presente);
+      3. (0.0, None) se nessun id presente.
+    """
+    for mid in new_ids:
+        if mid in vals:
+            return _num(vals.get(mid)), mid
+    first = None
+    for mid in old_ids:
+        if mid in vals:
+            v = _num(vals.get(mid))
+            if first is None:
+                first = (v, mid)
+            if v != 0:
+                return v, mid
+    return first if first is not None else (0.0, None)
 
 # CVR del negozio. averageGaTransactionsPerSession spesso = 0 (inutilizzabile), quindi:
 # 1) preferito (più affidabile): pixelPurchases / sessions  (se esiste una metrica sessioni)
@@ -271,11 +297,15 @@ def extract_google(summary: dict) -> Optional[dict]:
     values.current per ciascun metricId. Ritorna None se non c'è alcuna metrica Google.
     Solo totali a livello account (nessun breakdown per campagna nel Summary).
 
-    Conversioni (`orders`): catena di fallback NON-ZERO su GOOGLE_ORDERS_IDS
-    (ga_all_transactions_adGroup → ga_transactions_adGroup) per il nuovo account Google Ads.
+    Conversioni + Revenue: id AD-ATTRIBUITI di Google Ads (googleConversions /
+    googleConversionValue) con fallback ai vecchi id site-wide SOLO se assenti (vedi
+    _resolve_google_metric). ROAS RICALCOLATO da revenue÷spend corretti (NON si usa ga_ROAS,
+    che è site-wide e gonfiato). CPA resta googleCpa (CPA proprio di Google Ads). Spend
+    invariata (ga_adCost).
     """
     vals = collect_metric_values(summary)
-    present_ids = set(GOOGLE_METRIC_IDS.values()) | set(GOOGLE_ORDERS_IDS)
+    present_ids = (set(GOOGLE_METRIC_IDS.values()) | set(GOOGLE_REVENUE_NEW_IDS)
+                   | set(GOOGLE_ORDERS_NEW_IDS))
     if not any(mid in vals for mid in present_ids):
         return None
 
@@ -283,15 +313,20 @@ def extract_google(summary: dict) -> Optional[dict]:
     if not cpa:
         cpa = _num(vals.get(_GOOGLE_CPA_ALT))
 
+    spend = _num(vals.get(GOOGLE_METRIC_IDS["spend"]))
+    revenue, _rid = _resolve_google_metric(vals, GOOGLE_REVENUE_NEW_IDS, GOOGLE_REVENUE_OLD_IDS)
+    orders, _oid = _resolve_google_metric(vals, GOOGLE_ORDERS_NEW_IDS, GOOGLE_ORDERS_OLD_IDS)
+
     return {
         "currency": "USD",            # già USD: nessuna conversione
-        "spend": _num(vals.get(GOOGLE_METRIC_IDS["spend"])),
-        "revenue": _num(vals.get(GOOGLE_METRIC_IDS["revenue"])),
-        "orders": _first_nonzero(vals, GOOGLE_ORDERS_IDS),   # fallback chain
+        "spend": spend,
+        "revenue": revenue,
+        "orders": orders,
         "clicks": _num(vals.get(GOOGLE_METRIC_IDS["clicks"])),
         "impressions": _num(vals.get(GOOGLE_METRIC_IDS["impressions"])),
-        "roas": _num(vals.get(GOOGLE_METRIC_IDS["roas"])),  # se 0 -> ricalcolato
-        "cpa": cpa,                                          # se 0 -> ricalcolato
+        # ROAS da revenue÷spend CORRETTI (ga_ROAS è site-wide, es. 22.86x fittizio -> ignorato).
+        "roas": (revenue / spend) if spend else 0.0,
+        "cpa": cpa,                                          # se 0 -> ricalcolato (spend/orders)
     }
 
 
@@ -388,6 +423,8 @@ def extract_pixel_attribution(summary: dict) -> dict[str, dict]:
     vals = collect_metric_values(summary)
     out: dict[str, dict] = {}
     for channel, spec in CHANNEL_METRIC_CANDIDATES.items():
+        if channel == "google":
+            continue  # gestito sotto con il resolver AD-ATTRIBUITO (new-first)
         orders, o_kind, o_mid = _pick_candidate(vals, spec["orders"])
         revenue, r_kind, r_mid = _pick_candidate(vals, spec["revenue"])
         if orders is None and revenue is None:
@@ -396,6 +433,22 @@ def extract_pixel_attribution(summary: dict) -> dict[str, dict]:
         kind = o_kind or r_kind or "platform-reported"
         out[channel] = {"orders": orders or 0.0, "revenue": revenue or 0.0,
                         "kind": kind, "orders_metric": o_mid, "revenue_metric": r_mid}
+
+    # GOOGLE: pixel per-canale se presente; altrimenti id AD-ATTRIBUITI (googleConversions /
+    # googleConversionValue) con fallback ai vecchi site-wide SOLO se assenti — coerente con
+    # extract_google, così la colonna "TW" per Google non è più gonfiata dal site-wide GA.
+    g_pix_o = _first_present(vals, ("pixelGooglePurchases",))
+    g_pix_r = _first_present(vals, ("pixelGoogleConversionValue",))
+    if g_pix_o is not None or g_pix_r is not None:
+        out["google"] = {"orders": g_pix_o or 0.0, "revenue": g_pix_r or 0.0, "kind": "pixel",
+                         "orders_metric": "pixelGooglePurchases" if g_pix_o is not None else None,
+                         "revenue_metric": "pixelGoogleConversionValue" if g_pix_r is not None else None}
+    else:
+        g_o, g_oid = _resolve_google_metric(vals, GOOGLE_ORDERS_NEW_IDS, GOOGLE_ORDERS_OLD_IDS)
+        g_r, g_rid = _resolve_google_metric(vals, GOOGLE_REVENUE_NEW_IDS, GOOGLE_REVENUE_OLD_IDS)
+        if g_oid or g_rid:
+            out["google"] = {"orders": g_o, "revenue": g_r, "kind": "platform-reported",
+                             "orders_metric": g_oid, "revenue_metric": g_rid}
 
     # Totale pixel del negozio (canale sintetico 'pixel_total').
     total_orders = _first_present(vals, PIXEL_TOTAL_ORDERS)
