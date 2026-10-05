@@ -207,6 +207,12 @@ GOOGLE_METRIC_IDS = {
 }
 _GOOGLE_CPA_ALT = "googleAllCpa"
 
+# Conversioni Google: catena di fallback NON-ZERO. ga_all_transactions_adGroup è l'id
+# primario (funzionava sul vecchio account Google Ads); sul NUOVO account torna 0 e le
+# conversioni arrivano su ga_transactions_adGroup. Si prende il primo id con valore ≠ 0.
+# (La revenue resta ga_all_transactionsRevenue_adGroup, che funziona su entrambi.)
+GOOGLE_ORDERS_IDS = ("ga_all_transactions_adGroup", "ga_transactions_adGroup")
+
 # CVR del negozio. averageGaTransactionsPerSession spesso = 0 (inutilizzabile), quindi:
 # 1) preferito (più affidabile): pixelPurchases / sessions  (se esiste una metrica sessioni)
 # 2) fallback: pixelConversionRate (valore già in PERCENTUALE, es. 0.4399 -> 0.44%)
@@ -264,9 +270,13 @@ def extract_google(summary: dict) -> Optional[dict]:
     Estrae i valori Google Ads (già in USD) dai metric tile del Summary, leggendo
     values.current per ciascun metricId. Ritorna None se non c'è alcuna metrica Google.
     Solo totali a livello account (nessun breakdown per campagna nel Summary).
+
+    Conversioni (`orders`): catena di fallback NON-ZERO su GOOGLE_ORDERS_IDS
+    (ga_all_transactions_adGroup → ga_transactions_adGroup) per il nuovo account Google Ads.
     """
     vals = collect_metric_values(summary)
-    if not any(mid in vals for mid in GOOGLE_METRIC_IDS.values()):
+    present_ids = set(GOOGLE_METRIC_IDS.values()) | set(GOOGLE_ORDERS_IDS)
+    if not any(mid in vals for mid in present_ids):
         return None
 
     cpa = _num(vals.get(GOOGLE_METRIC_IDS["cpa"]))
@@ -277,7 +287,7 @@ def extract_google(summary: dict) -> Optional[dict]:
         "currency": "USD",            # già USD: nessuna conversione
         "spend": _num(vals.get(GOOGLE_METRIC_IDS["spend"])),
         "revenue": _num(vals.get(GOOGLE_METRIC_IDS["revenue"])),
-        "orders": _num(vals.get(GOOGLE_METRIC_IDS["orders"])),
+        "orders": _first_nonzero(vals, GOOGLE_ORDERS_IDS),   # fallback chain
         "clicks": _num(vals.get(GOOGLE_METRIC_IDS["clicks"])),
         "impressions": _num(vals.get(GOOGLE_METRIC_IDS["impressions"])),
         "roas": _num(vals.get(GOOGLE_METRIC_IDS["roas"])),  # se 0 -> ricalcolato
@@ -309,7 +319,8 @@ CHANNEL_METRIC_CANDIDATES = {
     },
     "google": {
         "orders": (("pixel", "pixelGooglePurchases"),
-                   ("platform-reported", "ga_all_transactions_adGroup")),
+                   ("platform-reported", "ga_all_transactions_adGroup"),
+                   ("platform-reported", "ga_transactions_adGroup")),   # fallback nuovo account
         "revenue": (("pixel", "pixelGoogleConversionValue"),
                     ("platform-reported", "ga_all_transactionsRevenue_adGroup")),
     },
@@ -334,12 +345,36 @@ def _first_present(vals: dict, keys) -> Optional[float]:
     return None
 
 
+def _first_nonzero(vals: dict, keys) -> float:
+    """Primo id con valore ≠ 0; se tutti presenti sono 0 usa il primo presente; altrimenti 0.0.
+    Serve alla catena di fallback (es. conversioni Google sul nuovo account)."""
+    first = None
+    for k in keys:
+        if k in vals:
+            v = _num(vals.get(k))
+            if first is None:
+                first = v
+            if v != 0:
+                return v
+    return first if first is not None else 0.0
+
+
 def _pick_candidate(vals: dict, candidates) -> tuple[Optional[float], Optional[str], Optional[str]]:
-    """Ritorna (valore, kind, metricId) del PRIMO candidato presente, altrimenti (None, None, None)."""
+    """
+    (valore, kind, metricId) del primo candidato PRESENTE e ≠ 0; se tutti i presenti sono 0
+    ritorna il primo presente (così un canale a 0 reale resta visibile); (None,None,None) se
+    nessun candidato è presente. Il preferire il non-zero abilita la catena di fallback (es.
+    conversioni Google: ga_all_transactions_adGroup=0 sul nuovo account -> ga_transactions_adGroup).
+    """
+    first = None
     for kind, mid in candidates:
         if mid in vals:
-            return _num(vals.get(mid)), kind, mid
-    return None, None, None
+            v = _num(vals.get(mid))
+            if first is None:
+                first = (v, kind, mid)
+            if v != 0:
+                return v, kind, mid
+    return first if first is not None else (None, None, None)
 
 
 def extract_pixel_attribution(summary: dict) -> dict[str, dict]:

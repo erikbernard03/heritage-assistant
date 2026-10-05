@@ -4,7 +4,11 @@ Test deterministici dell'estrazione/calcolo Google Ads (no rete, no credenziali)
 Verificano la mappatura per metricId (values.current), valori in USD (no conversione),
 e l'uso del ROAS/CPA riportati.
 """
-from src.connectors.triplewhale import extract_google, extract_store_cvr
+from src.connectors.triplewhale import (
+    extract_google,
+    extract_pixel_attribution,
+    extract_store_cvr,
+)
 from src.metrics.google import compute_google_metrics
 
 
@@ -34,6 +38,35 @@ def test_extract_google_from_metric_tiles():
     assert g["orders"] == 12
     assert round(g["revenue"], 2) == 673.6
     assert g["currency"] == "USD"
+
+
+def test_google_conversions_fallback_to_ga_transactions_adgroup():
+    # Nuovo account: id primario presente ma = 0 -> si usa ga_transactions_adGroup (=19).
+    summary = {"data": [
+        {"metricId": "ga_adCost", "values": {"current": 300.0}},
+        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 0}},
+        {"metricId": "ga_transactions_adGroup", "values": {"current": 19}},
+        {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 1200.0}},
+    ]}
+    g = extract_google(summary)
+    assert g["orders"] == 19
+    assert round(g["revenue"], 2) == 1200.0          # revenue id invariato
+    # pixel/tw_pixel: anche la vista per-canale Google usa la stessa catena di fallback
+    px = extract_pixel_attribution(summary)
+    assert px["google"]["orders"] == 19.0
+    assert round(px["google"]["revenue"], 2) == 1200.0
+
+
+def test_google_conversions_prefers_primary_when_nonzero():
+    # Vecchio account (o giorni normali): il primario ≠ 0 vince, il fallback è ignorato.
+    summary = {"data": [
+        {"metricId": "ga_adCost", "values": {"current": 300.0}},
+        {"metricId": "ga_all_transactions_adGroup", "values": {"current": 12}},
+        {"metricId": "ga_transactions_adGroup", "values": {"current": 19}},
+        {"metricId": "ga_all_transactionsRevenue_adGroup", "values": {"current": 673.6}},
+    ]}
+    assert extract_google(summary)["orders"] == 12
+    assert extract_pixel_attribution(summary)["google"]["orders"] == 12.0
 
 
 def test_extract_google_cpa_fallback_to_googleAllCpa():
