@@ -150,3 +150,30 @@ def test_extract_store_cvr_typical_percent_values_scaled():
 
 def test_extract_store_cvr_absent_returns_none():
     assert extract_store_cvr({"data": [{"metricId": "ga_adCost", "values": {"current": 10}}]}) is None
+
+
+def test_refresh_tw_range_iterates_days_and_overwrites(monkeypatch):
+    """refresh_tw_range: una pull Summary per giorno, riscrive google/tiktok/tw_pixel.
+    DB-free: monkeypatch dei loader e del fetch del Summary."""
+    import src.report as R
+    from config import settings as S
+
+    monkeypatch.setattr(S, "TRIPLEWHALE_API_KEY", "x")           # supera il guard
+    monkeypatch.setattr(R, "_fetch_tw_summary", lambda s, e: {"day": s})
+    monkeypatch.setattr(R, "_load_google", lambda day, summary, persist: ({"orders": 19}, 300.0))
+    monkeypatch.setattr(R, "_load_tiktok", lambda day, summary, persist: (None, [], 145.0))
+    monkeypatch.setattr(R, "_persist_tw_pixel", lambda store, day, summary: None)
+
+    out = R.refresh_tw_range("2026-10-01", "2026-10-03", store=object())
+    assert [r[0] for r in out] == ["2026-10-01", "2026-10-02", "2026-10-03"]
+    assert all(r[1] == 300.0 and r[2] == 19 and r[3] == 145.0 for r in out)
+
+
+def test_refresh_tw_range_reports_error_when_no_summary(monkeypatch):
+    import src.report as R
+    from config import settings as S
+
+    monkeypatch.setattr(S, "TRIPLEWHALE_API_KEY", "x")
+    monkeypatch.setattr(R, "_fetch_tw_summary", lambda s, e: None)   # pull fallita
+    out = R.refresh_tw_range("2026-10-01", "2026-10-01", store=object())
+    assert out[0][0] == "2026-10-01" and out[0][1] == "ERR"

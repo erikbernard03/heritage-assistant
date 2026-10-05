@@ -19,6 +19,7 @@ EXPECTED = [
     ("reportlastmonth", "Full previous month"),
     ("refresh_today", "Force re-pull today + yesterday"),
     ("refresh_meta", "Re-bucket Meta for a date range"),
+    ("refresh_tw", "Re-pull Triple Whale (Google/TikTok/pixel) for a range"),
     ("backfill", "Re-pull Shopify for a date range"),
     ("pl", "Monthly P&L (year month)"),
     ("shopify_check", "Shopify scopes + orders/sessions probe"),

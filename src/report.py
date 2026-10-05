@@ -565,6 +565,53 @@ def refresh_meta_range(
     return out
 
 
+def refresh_tw_range(
+    start_iso: str, end_iso: str, max_days: int = 60, store=None
+) -> list[tuple]:
+    """
+    Ri-tira il Summary Triple Whale per OGNI giorno (Europe/Rome) in [start_iso, end_iso] e
+    SOVRASCRIVE le tabelle TW-derivate del giorno: google_daily, tiktok_daily, tw_pixel_daily.
+    Serve a correggere lo storico dopo un cambio account (es. le conversioni Google ora su
+    ga_transactions_adGroup) o una riconnessione: i giorni con righe a $0 vengono riscritti.
+
+    UNA pull Summary per giorno (get_summary(day, day)), stessa logica del pull notturno.
+    NON tocca Shopify né daily_metrics. Ritorna una lista
+    (giorno, google_spend_usd|'ERR', google_orders|messaggio, tiktok_spend_usd|'-') per il
+    riepilogo.
+    """
+    from src.db.supabase_client import SupabaseStore
+
+    if not settings.TRIPLEWHALE_API_KEY:
+        raise RuntimeError("Triple Whale non configurato (TRIPLEWHALE_API_KEY).")
+
+    d0 = date.fromisoformat(start_iso)
+    d1 = date.fromisoformat(end_iso)
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days + 1 > max_days:
+        raise ValueError(f"Range troppo ampio (> {max_days} giorni).")
+
+    store = store or SupabaseStore()
+    out: list[tuple] = []
+    cur = d0
+    while cur <= d1:
+        day = cur.isoformat()
+        try:
+            summary = _fetch_tw_summary(day, day)
+            if summary is None:
+                out.append((day, "ERR", "no Summary (TW call failed)", "-"))
+            else:
+                g, g_spend = _load_google(day, summary, persist=True)
+                _t, _camps, t_spend = _load_tiktok(day, summary, persist=True)
+                _persist_tw_pixel(store, day, summary)   # tw_pixel_daily (orders Google via fallback)
+                g_orders = int((g or {}).get("orders") or 0)
+                out.append((day, round(g_spend, 2), g_orders, round(t_spend, 2)))
+        except Exception as exc:  # noqa: BLE001
+            out.append((day, "ERR", str(exc)[:80], "-"))
+        cur += timedelta(days=1)
+    return out
+
+
 def _fetch_tw_summary(start: str, end: str) -> Optional[dict]:
     """
     UNA pull del Summary Triple Whale per run. Ritorna il dict (condiviso da TikTok,
