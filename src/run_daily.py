@@ -43,8 +43,12 @@ from config import settings
 from src.report import build_daily_report
 
 _SEND_TIMEOUT = 30  # secondi per ogni chiamata Telegram
-# Tetto massimo per l'intera run; oltre, il watchdog forza l'uscita.
-WATCHDOG_SECONDS = int(os.getenv("RUN_DAILY_WATCHDOG_SECONDS", "180"))
+# Tetto massimo per l'intera run; oltre, il watchdog forza l'uscita. 300s di default per
+# dare margine alla run con DUE store Shopify (doppio pull ordini/handle/sessioni) +
+# Stripe: con 180s il watchdog poteva uccidere il processo DURANTE _persist, lasciando le
+# tabelle per-store a metà (buco silenzioso). _persist ora scrive le per-store PRIMA della
+# rete lenta, ma il margine extra evita del tutto la corsa.
+WATCHDOG_SECONDS = int(os.getenv("RUN_DAILY_WATCHDOG_SECONDS", "300"))
 
 
 def _start_watchdog(seconds: int) -> None:

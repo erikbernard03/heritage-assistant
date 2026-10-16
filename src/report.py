@@ -107,6 +107,7 @@ class GatheredDay:
     klaviyo_daily: Optional[dict]
     klaviyo_campaigns: list
     store_views: list = field(default_factory=list)   # viste per-store (own-day break-even)
+    persist_failures: list = field(default_factory=list)  # tabelle non salvate stanotte
 
 
 def _store_views_live(stores: list) -> list:
@@ -207,8 +208,9 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
         tw_cvr = float(google_daily.get("store_cvr") or 0) if google_daily else 0.0
         metrics.store_cvr = shopify_cvr if shopify_cvr is not None else tw_cvr
 
+    persist_failures: list = []
     if persist:
-        _persist(metrics, stores, tw_summary=tw_summary)
+        persist_failures = _persist(metrics, stores, tw_summary=tw_summary)
 
     return GatheredDay(
         metrics=metrics, meta_daily=meta_daily, meta_campaigns=meta_campaigns,
@@ -216,6 +218,7 @@ def _gather_day(window: DayWindow, persist: bool) -> GatheredDay:
         google_daily=google_daily, klaviyo_daily=klaviyo_daily,
         klaviyo_campaigns=klaviyo_campaigns,
         store_views=_store_views_live(stores),
+        persist_failures=persist_failures,
     )
 
 
@@ -233,8 +236,17 @@ def build_daily_report(
     return g.metrics, format_report(
         g.metrics, g.meta_daily, g.meta_campaigns, g.klaviyo_daily, g.klaviyo_campaigns,
         g.tiktok_daily, g.tiktok_campaigns, g.google_daily, breakeven=breakeven,
-        store_views=g.store_views,
+        store_views=g.store_views, persist_failures=g.persist_failures,
     )
+
+
+def _persist_warning_line(persist_failures: Optional[list]) -> str:
+    """Riga ⚠️ che NOMINA le tabelle per-giorno NON salvate stanotte (mai più silenzioso)."""
+    if not persist_failures:
+        return ""
+    tables = ", ".join(persist_failures)
+    return (f"\n\n⚠️ *Persist issue* — these tables were NOT saved tonight: {tables}. "
+            f"Run /backfill for this day to refill them.")
 
 
 def _own_day_breakeven(m: DailyMetrics):
@@ -324,7 +336,7 @@ def format_snapshot(
         out.append(
             "\n_Note: today's ad attribution is provisional — revenue/ROAS settle later._"
         )
-    return "\n".join(out) + "\n"
+    return "\n".join(out) + _persist_warning_line(getattr(g, "persist_failures", None)) + "\n"
 
 
 def _load_shopify_cvr(shop, day: str) -> Optional[float]:
@@ -897,77 +909,91 @@ def load_klaviyo_period(start_day: str, end_day: str) -> dict:
         return out
 
 
-def _persist_product_units(store, metrics: DailyMetrics, store_label: str = "com") -> None:
-    """Classifica i line item del giorno e salva le unità per prodotto per lo store (best-effort)."""
+def _persist_product_units(store, metrics: DailyMetrics, store_label: str = "com") -> Optional[str]:
+    """Classifica i line item del giorno e salva le unità per prodotto per lo store.
+    Ritorna None se OK, altrimenti il messaggio d'errore (best-effort: non solleva)."""
     try:
         from src.metrics.product_units import units_by_key_from_line_items
 
         units = units_by_key_from_line_items(metrics.line_items)
         store.upsert_product_units(metrics.day, units, store=store_label)
+        return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ product_units non salvate per {metrics.day}/{store_label}: {exc}")
+        return str(exc)[:200]
 
 
-def _persist_sales_by_country(store, day: str, orders: list[dict], store_label: str = "com") -> None:
-    """Calcola le vendite per paese del giorno e le salva per lo store (best-effort)."""
+def _persist_sales_by_country(store, day: str, orders: list[dict], store_label: str = "com") -> Optional[str]:
+    """Vendite per paese del giorno per lo store. None se OK, altrimenti errore."""
     try:
         from src.metrics.sales_location import revenue_by_country
 
         store.upsert_sales_by_country(day, revenue_by_country(orders), store=store_label)
+        return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ sales_by_country non salvate per {day}/{store_label}: {exc}")
+        return str(exc)[:200]
 
 
-def _persist_sales_by_hour(store, day: str, orders: list[dict], store_label: str = "com") -> None:
-    """Calcola le vendite per ORA (Europe/Rome) del giorno e le salva per lo store (best-effort)."""
+def _persist_sales_by_hour(store, day: str, orders: list[dict], store_label: str = "com") -> Optional[str]:
+    """Vendite per ORA (Europe/Rome) del giorno per lo store. None se OK, altrimenti errore."""
     try:
         from src.metrics.sales_timing import revenue_by_hour
 
         store.upsert_sales_by_hour(day, revenue_by_hour(orders), store=store_label)
+        return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ sales_by_hour non salvate per {day}/{store_label}: {exc}")
+        return str(exc)[:200]
 
 
-def _persist_sales_by_source(store, day: str, orders: list[dict], store_label: str = "com") -> None:
-    """Classifica gli ordini per sorgente last-click e salva per lo store (best-effort)."""
+def _persist_sales_by_source(store, day: str, orders: list[dict], store_label: str = "com") -> Optional[str]:
+    """Classifica gli ordini per sorgente last-click e salva per lo store. None se OK, altrimenti errore."""
     try:
         from src.metrics.sales_source import revenue_by_source
 
         store.upsert_orders_by_source(day, revenue_by_source(orders), store=store_label)
+        return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ orders_by_source non salvate per {day}/{store_label}: {exc}")
+        return str(exc)[:200]
 
 
-def _persist_tw_pixel(store, day: str, tw_summary: Optional[dict]) -> None:
-    """Salva l'attribuzione pixel Triple Whale per canale del giorno (best-effort)."""
+def _persist_tw_pixel(store, day: str, tw_summary: Optional[dict]) -> Optional[str]:
+    """Attribuzione pixel Triple Whale per canale del giorno. None se OK/assente, altrimenti errore."""
     if not tw_summary:
-        return
+        return None
     try:
         from src.connectors.triplewhale import extract_pixel_attribution
 
         store.upsert_tw_pixel_daily(day, extract_pixel_attribution(tw_summary))
+        return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ tw_pixel non salvato per {day}: {exc}")
+        return str(exc)[:200]
 
 
-def _persist_refunds(store, day: str, orders: list[dict], store_label: str = "com") -> None:
-    """Salva i refund Shopify del giorno per lo store (visibilità; best-effort)."""
+def _persist_refunds(store, day: str, orders: list[dict], store_label: str = "com") -> Optional[str]:
+    """Refund Shopify del giorno per lo store (visibilità). None se OK, altrimenti errore."""
     try:
         from src.metrics.stripe_metrics import refunds_from_orders
 
         agg = refunds_from_orders(orders)
         store.upsert_refunds_daily(day, agg.get(day, {"amount": 0.0, "count": 0}), store=store_label)
+        return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ refunds non salvati per {day}/{store_label}: {exc}")
+        return str(exc)[:200]
 
 
-def _persist_stripe(store, day: str) -> None:
+def _persist_stripe(store, day: str) -> Optional[str]:
     """
     Pull Stripe del giorno (SOLA LETTURA, best-effort): stripe_daily[day] dalle balance
     transactions + refresh payout (ultimi 35g) e dispute (ultimi 120g). No-op se non configurato.
+    Ritorna None se OK/non-configurato, altrimenti il messaggio d'errore.
     """
     if not settings.STRIPE_API_KEY:
-        return
+        return None
     try:
         from src.connectors.stripe_conn import StripeConnector
         from src.metrics.stripe_metrics import (
@@ -986,8 +1012,10 @@ def _persist_stripe(store, day: str) -> None:
         payouts = convert_payouts_usd(sc.payouts(d - timedelta(days=35), d + timedelta(days=7)), rate)
         store.upsert_stripe_payouts(payouts)
         store.upsert_stripe_disputes(sc.disputes(d - timedelta(days=120), d))
+        return None
     except Exception as exc:  # noqa: BLE001
         print(f"[report] ⚠️ Stripe sync saltato per {day}: {exc}")
+        return str(exc)[:200]
 
 
 def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, store=None) -> dict:
@@ -1031,46 +1059,75 @@ def backfill_stripe_range(start_iso: str, end_iso: str, max_days: int = 400, sto
             "range": f"{d0.isoformat()} → {d1.isoformat()}"}
 
 
-def _persist(combined: DailyMetrics, stores: list, tw_summary: Optional[dict] = None) -> None:
+def _persist(combined: DailyMetrics, stores: list, tw_summary: Optional[dict] = None) -> list[str]:
     """
     Salva su Supabase (Option A: multi-store combinato). `combined` = riga daily_metrics
     sommata; `stores` = lista di (label, orders, handle_map, metrics) per store.
-    - daily_metrics + line_items + orders: COMBINATI (una riga/giorno; ID Shopify globalmente
-      unici, nessuna collisione tra store).
-    - product_units / sales_by_country / sales_by_hour / orders_by_source / refunds /
-      store_daily: PER STORE (colonna `store`).
-    - Stripe + tw_pixel: solo store .com (il .co usa Shopify Payments, niente Stripe/ads).
+
+    ROBUSTEZZA (anti-fallimento-silenzioso):
+    - OGNI scrittura è isolata: un errore su una tabella NON impedisce le altre (prima un
+      upsert non protetto su store_daily poteva abortire l'intero loop e lasciare buchi).
+    - Le tabelle PER-STORE (da ordini già in memoria, solo upsert Supabase) sono scritte
+      PRIMA delle pull di rete lente (Stripe): così il watchdog del cron notturno non le
+      lascia a metà se la rete Stripe è lenta.
+    - Ritorna la lista delle tabelle FALLITE (es. "product_units/com"): il chiamante la
+      mostra nel report Telegram — mai più fallimenti silenziosi.
     """
+    failed: list[str] = []
     try:
         from src.db.supabase_client import SupabaseStore
 
         store = SupabaseStore()
-        all_orders = [o for (_l, orders, _h, _m) in stores for o in orders]
-        merged_handle: dict[int, str] = {}
-        for (_l, _o, hmap, _m) in stores:
-            merged_handle.update(hmap or {})
-        store.upsert_orders(all_orders, merged_handle)
-        store.upsert_line_items(combined)
-        store.upsert_daily_metrics(combined)
-        _persist_tw_pixel(store, combined.day, tw_summary)   # pixel TW per canale (.com)
-        _persist_stripe(store, combined.day)                 # Stripe daily/payout/dispute (.com)
-        for label, orders, _hmap, m in stores:
-            _persist_product_units(store, m, store_label=label)
-            _persist_sales_by_country(store, combined.day, orders, store_label=label)
-            _persist_sales_by_hour(store, combined.day, orders, store_label=label)
-            _persist_sales_by_source(store, combined.day, orders, store_label=label)
-            _persist_refunds(store, combined.day, orders, store_label=label)
-            store.upsert_store_daily(combined.day, label, m)
-        labels = "+".join(l for (l, _o, _h, _m) in stores)
-        print(
-            f"[report] daily_metrics PERSISTED day={combined.day} stores={labels} "
-            f"orders={combined.num_orders} revenue=${combined.revenue:,.2f}"
-        )
-    except Exception as exc:  # il report deve arrivare comunque
-        # ATTENZIONE: se questo fallisce, il giorno NON viene salvato -> buco in
-        # daily_metrics (break-even/backfill ne risentono). Causa tipica: migration
-        # mancante (es. colonna store) o Supabase non raggiungibile.
-        print(f"[report] ⚠️ daily_metrics NON salvato per {combined.day}: {exc}")
+    except Exception as exc:  # noqa: BLE001 — senza DB non si salva nulla
+        print(f"[report] ⚠️ Supabase non disponibile per {combined.day}: {exc}")
+        return ["supabase-init"]
+
+    def guard(name: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            failed.append(name)
+            print(f"[report] ⚠️ persist {name} FALLITO per {combined.day}: {exc}")
+
+    def note(name: str, err: Optional[str]) -> None:
+        if err:
+            failed.append(name)
+
+    # 1) Combinati (una riga/giorno). daily_metrics per primo: è il dato canonico.
+    all_orders = [o for (_l, orders, _h, _m) in stores for o in orders]
+    merged_handle: dict[int, str] = {}
+    for (_l, _o, hmap, _m) in stores:
+        merged_handle.update(hmap or {})
+    guard("daily_metrics", lambda: store.upsert_daily_metrics(combined))
+    guard("orders", lambda: store.upsert_orders(all_orders, merged_handle))
+    guard("line_items", lambda: store.upsert_line_items(combined))
+
+    # 2) PER-STORE (solo upsert da dati già in memoria: veloci). PRIMA della rete Stripe,
+    #    così non vengono persi se la run si avvicina al watchdog.
+    for label, orders, _hmap, m in stores:
+        note(f"product_units/{label}", _persist_product_units(store, m, store_label=label))
+        note(f"sales_by_country/{label}",
+             _persist_sales_by_country(store, combined.day, orders, store_label=label))
+        note(f"sales_by_hour/{label}",
+             _persist_sales_by_hour(store, combined.day, orders, store_label=label))
+        note(f"orders_by_source/{label}",
+             _persist_sales_by_source(store, combined.day, orders, store_label=label))
+        note(f"refunds_daily/{label}",
+             _persist_refunds(store, combined.day, orders, store_label=label))
+        guard(f"store_daily/{label}",
+              lambda m=m, label=label: store.upsert_store_daily(combined.day, label, m))
+
+    # 3) Rete LENTA, best-effort, per ULTIMO: tw_pixel (.com) e Stripe (.com).
+    note("tw_pixel", _persist_tw_pixel(store, combined.day, tw_summary))
+    note("stripe", _persist_stripe(store, combined.day))
+
+    status = "OK" if not failed else f"PARTIAL (failed: {', '.join(failed)})"
+    print(
+        f"[report] persist {status} day={combined.day} "
+        f"stores={'+'.join(l for (l, _o, _h, _m) in stores)} "
+        f"orders={combined.num_orders} revenue=${combined.revenue:,.2f}"
+    )
+    return failed
 
 
 def backfill_daily_metrics(
@@ -1245,6 +1302,7 @@ def format_report(
     breakeven: Optional[tuple] = None,
     header: Optional[str] = None,
     store_views: Optional[list] = None,
+    persist_failures: Optional[list] = None,
 ) -> str:
     """
     Report Telegram (Markdown, USD). Con `store_views` (nuova separazione PER STORE):
@@ -1323,7 +1381,7 @@ def format_report(
         out.append("\n*3) AD PLATFORMS*" if not store_views else "\n*AD PLATFORMS*")
         out.append(section3.rstrip("\n"))
 
-    return "\n".join(out) + "\n"
+    return "\n".join(out) + _persist_warning_line(persist_failures) + "\n"
 
 
 def _format_google_section(
