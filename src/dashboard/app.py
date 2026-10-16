@@ -334,63 +334,12 @@ def _compute_monthly() -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
-# Klaviyo live (finestra piena) — CACHE PERSISTENTE + STALE-WHILE-REVALIDATE.
-#
-# Rate limit del reporting Klaviyo bassissimo: fetch UNA sola volta per (start,end),
-# RIUSATO da tabella E breakdown (campagne + flows arrivano nello stesso oggetto), mai due
-# volte nello stesso render. I mesi PASSATI, una volta presi con successo, restano in cache
-# a vita di processo (non cambiano). Il mese CORRENTE ha TTL 6h ma se scaduto si SERVE il
-# valore STALE mentre si tenta un refresh: se il refresh fallisce (rate limit) si continua a
-# mostrare lo stale, senza bloccare né mostrare errori. Solo un COLD START senza alcun valore
-# in cache può fallire -> fallback DB etichettato "(snapshot)".
-#
-# Store a livello di modulo: sopravvive ai rerun di Streamlit nello stesso processo.
+# Klaviyo live (finestra piena) — cache a DUE LIVELLI (L1 in-process + L2 Supabase
+# persistente) in src/metrics/klaviyo_cache.py: il cold start dopo un redeploy legge dal DB
+# invece di ri-tirare tutti i mesi da Klaviyo (rate limit). Il cron notturno rinfresca la
+# riga del mese corrente, così il primo load è DB-only e veloce.
 # --------------------------------------------------------------------------- #
-import time as _time  # noqa: E402
-
-_KLA_STORE: dict = {}          # (start,end) -> {"data": kp, "ts": epoch}
-_KLA_TTL = 6 * 3600            # mese corrente: freschezza 6h
-
-
-def _klaviyo_fetch(start: str, end: str) -> dict:
-    from src.report import load_klaviyo_period
-
-    kp = load_klaviyo_period(start, end)
-    if not kp.get("ok") or kp.get("campaigns_revenue") is None:
-        raise RuntimeError(kp.get("error") or "Klaviyo period query failed")
-    return kp
-
-
-def _get_klaviyo(start: str, end: str, is_current: bool) -> tuple:
-    """
-    Ritorna (kp | None, stale: bool, error: str | None).
-    - past con cache -> servito per sempre (nessun fetch).
-    - current fresco -> servito.
-    - current scaduto -> prova refresh; se fallisce, serve lo STALE (stale=True, no errore
-      bloccante).
-    - nessuna cache -> fetch (cold, sequenziale con Retry-After nel connettore); se fallisce,
-      (None, False, error) -> il chiamante usa il fallback DB "(snapshot)".
-    """
-    key = (start, end)
-    entry = _KLA_STORE.get(key)
-    now = _time.time()
-    if entry is not None:
-        if not is_current or (now - entry["ts"] < _KLA_TTL):
-            return entry["data"], False, None
-        # current & stale -> refresh best-effort, altrimenti servi stale
-        try:
-            kp = _klaviyo_fetch(start, end)
-            _KLA_STORE[key] = {"data": kp, "ts": now}
-            return kp, False, None
-        except Exception as exc:  # noqa: BLE001
-            return entry["data"], True, str(exc)
-    # cold: nessuna cache
-    try:
-        kp = _klaviyo_fetch(start, end)
-        _KLA_STORE[key] = {"data": kp, "ts": now}
-        return kp, False, None
-    except Exception as exc:  # noqa: BLE001
-        return None, False, str(exc)
+from src.metrics.klaviyo_cache import get_klaviyo as _get_klaviyo  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #

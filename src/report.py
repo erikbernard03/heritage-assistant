@@ -909,6 +909,45 @@ def load_klaviyo_period(start_day: str, end_day: str) -> dict:
         return out
 
 
+def refresh_klaviyo_month_cache(month: Optional[str] = None, store=None) -> Optional[str]:
+    """
+    Rinfresca la CACHE PERSISTENTE Klaviyo (klaviyo_monthly_cache) del mese `month`
+    ('YYYY-MM', default = mese CORRENTE di Europe/Rome). Tira la finestra piena dal 1° del
+    mese a oggi e scrive la riga. Pensata per il CRON NOTTURNO: così il primo load della
+    dashboard legge dal DB e NON deve chiamare Klaviyo (rate limit). Best-effort: ritorna
+    None se OK, altrimenti un messaggio d'errore (non solleva).
+    """
+    try:
+        tz = pytz.timezone(settings.TIMEZONE)
+        today = datetime.now(tz).date()
+        if month is None:
+            month = f"{today.year}-{today.month:02d}"
+        start = f"{month}-01"
+        # fine = oggi se è il mese corrente, altrimenti ultimo giorno del mese (mese chiuso).
+        y, mo = (int(x) for x in month.split("-"))
+        from calendar import monthrange
+
+        last_dom = monthrange(y, mo)[1]
+        end = today.isoformat() if (y == today.year and mo == today.month) \
+            else f"{month}-{last_dom:02d}"
+
+        kp = load_klaviyo_period(start, end)
+        if not kp.get("ok") or kp.get("campaigns_revenue") is None:
+            return kp.get("error") or "klaviyo period not ok"
+
+        if store is None:
+            from src.db.supabase_client import SupabaseStore
+
+            store = SupabaseStore()
+        store.upsert_klaviyo_month_cache(month, kp)
+        print(f"[report] klaviyo cache refreshed for {month} "
+              f"(campaigns ${kp.get('campaigns_revenue')}, flows {kp.get('flows_revenue')})")
+        return None
+    except Exception as exc:  # noqa: BLE001 — non deve rompere il cron
+        print(f"[report] ⚠️ klaviyo cache refresh saltato: {exc}")
+        return str(exc)[:200]
+
+
 def _persist_product_units(store, metrics: DailyMetrics, store_label: str = "com") -> Optional[str]:
     """Classifica i line item del giorno e salva le unità per prodotto per lo store.
     Ritorna None se OK, altrimenti il messaggio d'errore (best-effort: non solleva)."""

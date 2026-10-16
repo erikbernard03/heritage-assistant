@@ -6,6 +6,7 @@ Tutti i valori monetari sono in USD. Le scritture usano upsert idempotente
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from config import settings
@@ -223,6 +224,62 @@ class SupabaseStore:
                .eq("store", store).lt("day", day).gt("orders", 0)
                .order("day", desc=True).limit(limit).execute())
         return res.data or []
+
+    # ------------------------------------- Klaviyo monthly cache (persistente)
+    def get_klaviyo_month_cache(self, month: str) -> Optional[dict]:
+        """
+        Cache Klaviyo a finestra piena del mese (persistita). Ritorna
+        {"kp": <risultato tipo load_klaviyo_period>, "ts": epoch_float} oppure None se assente.
+        Ricompone kp dalle righe 'campaign' (sempre) + 'flow' (se presente). None se manca la
+        riga 'campaign'.
+        """
+        res = (self.client.table("klaviyo_monthly_cache").select("*")
+               .eq("month", month).execute())
+        rows = {r.get("kind"): r for r in (res.data or [])}
+        camp = rows.get("campaign")
+        if not camp:
+            return None
+        cp = camp.get("payload") or {}
+        fp = (rows.get("flow") or {}).get("payload") or {}
+        kp = {
+            "ok": True,
+            "error": cp.get("error"),
+            "campaigns_revenue": cp.get("campaigns_revenue"),
+            "campaigns": cp.get("campaigns") or [],
+            "daily": cp.get("daily"),
+            "flows_revenue": fp.get("flows_revenue"),
+            "flows": fp.get("flows") or [],
+        }
+        ts = 0.0
+        try:
+            raw = str(camp.get("fetched_at") or "").replace("Z", "+00:00")
+            ts = datetime.fromisoformat(raw).timestamp()
+        except (ValueError, TypeError):
+            pass
+        return {"kp": kp, "ts": ts}
+
+    def upsert_klaviyo_month_cache(self, month: str, kp: dict) -> None:
+        """
+        Scrive la cache del mese (DELETE-then-INSERT per month, così i kind stale spariscono).
+        Riga 'campaign' sempre (se kp valido); riga 'flow' solo se i flows sono disponibili.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = [{
+            "month": month, "kind": "campaign", "fetched_at": now_iso,
+            "payload": {
+                "campaigns_revenue": kp.get("campaigns_revenue"),
+                "campaigns": kp.get("campaigns") or [],
+                "daily": kp.get("daily"),
+                "error": kp.get("error"),
+            },
+        }]
+        if kp.get("flows_revenue") is not None or kp.get("flows"):
+            rows.append({
+                "month": month, "kind": "flow", "fetched_at": now_iso,
+                "payload": {"flows_revenue": kp.get("flows_revenue"), "flows": kp.get("flows") or []},
+            })
+        self.client.table("klaviyo_monthly_cache").delete().eq("month", month).execute()
+        self.client.table("klaviyo_monthly_cache").insert(rows).execute()
 
     def upsert_refunds_daily(self, day: str, agg: dict, store: str = "com") -> None:
         """Upsert dei refund Shopify del giorno per lo `store` (chiave = day+store)."""

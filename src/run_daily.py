@@ -131,6 +131,15 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[run_daily] send FAILED: {exc}", flush=True)
         return 1
+
+    # DOPO l'invio (così non ritarda il report): rinfresca la cache Klaviyo del mese CORRENTE
+    # su Supabase, così il primo load della dashboard è DB-only e veloce. Best-effort.
+    try:
+        from src.report import refresh_klaviyo_month_cache
+
+        refresh_klaviyo_month_cache()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[run_daily] klaviyo cache refresh skipped: {exc}", flush=True)
     return 0
 
 
