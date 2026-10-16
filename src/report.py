@@ -1282,25 +1282,45 @@ def backfill_daily_metrics(
 
             # Persistenza: combinato (daily_metrics/line_items/orders) + per-store (granulari +
             # store_daily). NB: il backfill è SOLO-Shopify -> niente Stripe/tw_pixel qui.
+            # Ogni scrittura è ISOLATA e le FALLITE vengono raccolte (niente più ✅ silenzioso
+            # con tabelle non salvate): day_failed finisce nel riepilogo di /backfill.
             all_orders = [o for (_l, orders, _h, _mm) in stores for o in orders]
             merged_handle: dict = {}
             for (_l, _o, hh, _mm) in stores:
                 merged_handle.update(hh or {})
-            store.upsert_orders(all_orders, merged_handle)
-            store.upsert_line_items(m)
-            store.upsert_daily_metrics(m)
+            day_failed: list[str] = []
+
+            def _note(name: str, err: Optional[str]) -> None:
+                if err:
+                    day_failed.append(name)
+
+            def _guard(name: str, fn) -> None:
+                try:
+                    fn()
+                except Exception as exc:  # noqa: BLE001
+                    day_failed.append(name)
+                    print(f"[backfill] ⚠️ {name} FALLITO {w.day_str}: {exc}")
+
+            _guard("daily_metrics", lambda: store.upsert_daily_metrics(m))
+            _guard("orders", lambda: store.upsert_orders(all_orders, merged_handle))
+            _guard("line_items", lambda: store.upsert_line_items(m))
             for label, orders, _hh, mm in stores:
-                _persist_product_units(store, mm, store_label=label)
-                _persist_sales_by_country(store, w.day_str, orders, store_label=label)
-                _persist_sales_by_hour(store, w.day_str, orders, store_label=label)
-                _persist_sales_by_source(store, w.day_str, orders, store_label=label)
-                _persist_refunds(store, w.day_str, orders, store_label=label)
-                store.upsert_store_daily(w.day_str, label, mm)
+                _note(f"product_units/{label}", _persist_product_units(store, mm, store_label=label))
+                _note(f"sales_by_country/{label}",
+                      _persist_sales_by_country(store, w.day_str, orders, store_label=label))
+                _note(f"sales_by_hour/{label}",
+                      _persist_sales_by_hour(store, w.day_str, orders, store_label=label))
+                _note(f"orders_by_source/{label}",
+                      _persist_sales_by_source(store, w.day_str, orders, store_label=label))
+                _note(f"refunds_daily/{label}",
+                      _persist_refunds(store, w.day_str, orders, store_label=label))
+                _guard(f"store_daily/{label}",
+                       lambda mm=mm, label=label: store.upsert_store_daily(w.day_str, label, mm))
 
             cogs_per_order = (m.cogs_total / m.num_orders) if m.num_orders else 0.0
             out.append(
                 (w.day_str, m.num_orders, round(m.revenue, 2),
-                 round(m.cogs_total, 2), round(cogs_per_order, 2), m.store_sessions)
+                 round(m.cogs_total, 2), round(cogs_per_order, 2), m.store_sessions, day_failed)
             )
         except Exception as exc:  # noqa: BLE001
             out.append((w.day_str, "ERR", str(exc)[:80]))

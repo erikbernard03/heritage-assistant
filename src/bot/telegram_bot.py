@@ -399,22 +399,30 @@ async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         result = await asyncio.to_thread(backfill_daily_metrics, start, end)
         lines = ["✅ Backfill done (Shopify-only, COGS recomputed from current config):"]
         real_sessions = False
+        any_failed = False
         for row in result:
             if row[1] == "ERR":
                 lines.append(f"  • {row[0]}: ❌ {row[2]}")
             else:
-                day, orders, rev, cogs, cogs_po, sessions = row
+                day, orders, rev, cogs, cogs_po, sessions = row[:6]
+                failed = row[6] if len(row) > 6 else []
                 vis = f"{sessions:,} visitors" if sessions is not None else "visitors n/a"
                 if sessions is not None:
                     real_sessions = True
+                warn = f" · ⚠️ NOT saved: {', '.join(failed)}" if failed else ""
+                if failed:
+                    any_failed = True
                 lines.append(
                     f"  • {day}: {orders} orders · ${rev:,.2f} · "
-                    f"COGS ${cogs:,.2f} (${cogs_po:,.2f}/order) · {vis}"
+                    f"COGS ${cogs:,.2f} (${cogs_po:,.2f}/order) · {vis}{warn}"
                 )
         lines.append(
             "🟢 Real Shopify sessions filled (read_reports OK)." if real_sessions
             else "🟡 Visitors n/a — read_reports scope missing; dashboard will estimate."
         )
+        if any_failed:
+            lines.append("⚠️ Some per-day tables were NOT saved (see ⚠️ above) — re-run "
+                         "/backfill for those days; check logs for the error.")
         await msg.edit_text("\n".join(lines)[:3800])
     except Exception as exc:  # noqa: BLE001
         logger.exception("Errore nel backfill")

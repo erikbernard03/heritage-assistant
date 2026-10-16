@@ -289,7 +289,7 @@ def test_backfill_recomputes_cogs_from_current_config():
     # unità prodotto classificate e salvate (round signet)
     assert store.units["2026-06-24"] == {"gold_signet_round": 1}
     # il riepilogo restituito riporta cogs_total + cogs/order + sessions
-    day, orders, rev, cogs, cogs_po, sessions = result[0]
+    day, orders, rev, cogs, cogs_po, sessions = result[0][:6]
     assert orders == 1 and cogs == 12.0 and cogs_po == 12.0 and sessions == 440
     # il singleton è stato invalidato dal backfill (nuovo oggetto al prossimo accesso)
     assert cl.get_resolver() is not warmed

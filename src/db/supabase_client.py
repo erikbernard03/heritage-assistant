@@ -413,18 +413,56 @@ class SupabaseStore:
         "store_daily",
     }
 
+    # Ordine TOTALE (chiavi primarie) per ogni tabella range: serve alla paginazione
+    # deterministica (vedi get_table_range). Senza un ordine univoco l'OFFSET può
+    # duplicare/saltare righe ai confini di pagina.
+    _RANGE_ORDER = {
+        "daily_metrics": ("day",),
+        "meta_daily": ("day",),
+        "meta_campaigns": ("day", "campaign_id"),
+        "tiktok_daily": ("day",),
+        "tiktok_campaigns": ("day", "campaign_id"),
+        "google_daily": ("day",),
+        "klaviyo_daily": ("day",),
+        "klaviyo_campaigns": ("day", "campaign_id"),
+        "product_units_daily": ("day", "store", "product_key"),
+        "sales_by_country_daily": ("day", "store", "country"),
+        "sales_by_hour_daily": ("day", "store", "hour"),
+        "stripe_daily": ("day",),
+        "refunds_daily": ("day", "store"),
+        "orders_by_source_daily": ("day", "store", "source"),
+        "tw_pixel_daily": ("day", "store", "channel"),
+        "store_daily": ("day", "store"),
+    }
+
     def get_table_range(self, table: str, start_day: str, end_day: str) -> list[dict]:
-        """Tutte le righe di `table` con day in [start_day, end_day] (per i report multi-giorno)."""
+        """
+        TUTTE le righe di `table` con day in [start_day, end_day] (per i report multi-giorno).
+
+        PAGINATO: PostgREST/Supabase tronca le risposte a 1000 righe di default. Una select
+        singola su tabelle multi-riga-per-giorno (product_units, sales_by_hour, ...) su molti
+        mesi e 2 store supera 1000 righe -> venivano restituite solo le prime 1000, e SENZA
+        ORDER BY la fetta cambiava tra un load e l'altro (es. unità di agosto che "calano" da
+        sole). Qui si paginano TUTTE le righe con un ordine TOTALE (le chiavi primarie), così
+        il risultato è completo e stabile.
+        """
         if table not in self._RANGE_TABLES:
             raise ValueError(f"table non consentita: {table}")
-        res = (
-            self.client.table(table)
-            .select("*")
-            .gte("day", start_day)
-            .lte("day", end_day)
-            .execute()
-        )
-        return res.data or []
+        order_cols = self._RANGE_ORDER.get(table, ("day",))
+        page = 1000
+        out: list[dict] = []
+        offset = 0
+        while True:
+            q = (self.client.table(table).select("*")
+                 .gte("day", start_day).lte("day", end_day))
+            for col in order_cols:
+                q = q.order(col)
+            batch = (q.range(offset, offset + page - 1).execute().data) or []
+            out.extend(batch)
+            if len(batch) < page:
+                break
+            offset += page
+        return out
 
     # ----------------------------------------------------------- Meta (Fase 2)
     def upsert_meta_daily(self, meta) -> None:
