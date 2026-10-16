@@ -948,6 +948,46 @@ def refresh_klaviyo_month_cache(month: Optional[str] = None, store=None) -> Opti
         return str(exc)[:200]
 
 
+def warm_klaviyo_past_months(store=None, today=None, max_new: int = 6) -> list[tuple]:
+    """
+    Warm-up UNA-TANTUM della cache Klaviyo per i MESI PASSATI mancanti (klaviyo_monthly_cache).
+    I mesi chiusi sono immutabili: una volta in cache NON vengono più ri-tirati, quindi questa
+    funzione è naturalmente idempotente (fetch una volta sola nella vita del mese).
+
+    - Mesi candidati = quelli con dati in daily_metrics, ESCLUSO il mese corrente.
+    - Salta i mesi già in cache (never again).
+    - Fetch SEQUENZIALE (rate limit Klaviyo), con cap `max_new` per notte: eventuali mesi
+      residui vengono completati dalle notti successive. Pensata per girare nel cron DOPO
+      l'invio del report (best-effort). Ritorna [(month, 'done'|'err'|msg)].
+    """
+    from src.db.supabase_client import SupabaseStore
+
+    if not settings.KLAVIYO_API_KEY:
+        return []
+    try:
+        store = store or SupabaseStore()
+        tz = pytz.timezone(settings.TIMEZONE)
+        today = today or datetime.now(tz).date()
+        current = f"{today.year}-{today.month:02d}"
+
+        rows = store.get_daily_metrics_range("2000-01-01", today.isoformat())
+        months_with_data = sorted({str(r.get("day", ""))[:7] for r in rows if r.get("day")})
+        cached = store.get_klaviyo_cached_months()
+        missing = [m for m in months_with_data if m and m < current and m not in cached]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[report] ⚠️ klaviyo warm-up: impossibile determinare i mesi mancanti: {exc}")
+        return []
+
+    out: list[tuple] = []
+    for month in missing[:max_new]:
+        err = refresh_klaviyo_month_cache(month=month, store=store)
+        out.append((month, "done" if err is None else err))
+    remaining = max(0, len(missing) - max_new)
+    print(f"[report] klaviyo warm-up: {len(out)} mesi riempiti, {remaining} rimanenti "
+          f"(verranno completati le prossime notti).")
+    return out
+
+
 def _persist_product_units(store, metrics: DailyMetrics, store_label: str = "com") -> Optional[str]:
     """Classifica i line item del giorno e salva le unità per prodotto per lo store.
     Ritorna None se OK, altrimenti il messaggio d'errore (best-effort: non solleva)."""

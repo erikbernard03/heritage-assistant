@@ -123,3 +123,55 @@ def test_store_cache_roundtrip_splits_campaign_and_flow():
     # ricomposizione
     hit = s.get_klaviyo_month_cache("2026-10")
     assert hit["kp"]["campaigns_revenue"] == 300.0 and hit["kp"]["flows_revenue"] == 50.0
+
+
+# ----------------------------------------------- warm-up una-tantum dei mesi passati
+class _WarmStore:
+    def __init__(self, months_with_data, cached):
+        self._months = list(months_with_data)
+        self._cached = set(cached)
+        self.written = []
+
+    def get_daily_metrics_range(self, start, end):
+        return [{"day": f"{m}-15"} for m in self._months]
+
+    def get_klaviyo_cached_months(self):
+        return set(self._cached)
+
+    def upsert_klaviyo_month_cache(self, month, kp):
+        self.written.append(month)
+        self._cached.add(month)
+
+
+def _patch_report_klaviyo(monkeypatch):
+    import src.report as R
+    from config import settings as S
+    monkeypatch.setattr(S, "KLAVIYO_API_KEY", "x")
+    monkeypatch.setattr(R, "load_klaviyo_period", lambda s, e: _kp())
+    return R
+
+
+def test_warm_fills_only_missing_past_months(monkeypatch):
+    from datetime import date
+    R = _patch_report_klaviyo(monkeypatch)
+    store = _WarmStore(["2026-07", "2026-08", "2026-09", "2026-10"], cached={"2026-08"})
+    out = R.warm_klaviyo_past_months(store=store, today=date(2026, 10, 16))
+    # 08 già in cache (saltato), 10 è il mese corrente (escluso) -> riempie 07 e 09
+    assert store.written == ["2026-07", "2026-09"]
+    assert all(status == "done" for _m, status in out)
+
+
+def test_warm_is_idempotent_second_night_noop(monkeypatch):
+    from datetime import date
+    R = _patch_report_klaviyo(monkeypatch)
+    store = _WarmStore(["2026-07", "2026-09"], cached={"2026-07", "2026-09"})
+    out = R.warm_klaviyo_past_months(store=store, today=date(2026, 10, 16))
+    assert store.written == [] and out == []        # tutto già in cache -> nessun fetch
+
+
+def test_warm_caps_per_night(monkeypatch):
+    from datetime import date
+    R = _patch_report_klaviyo(monkeypatch)
+    store = _WarmStore(["2026-06", "2026-07", "2026-08", "2026-09"], cached=set())
+    out = R.warm_klaviyo_past_months(store=store, today=date(2026, 10, 16), max_new=2)
+    assert store.written == ["2026-06", "2026-07"] and len(out) == 2   # resto: notti successive

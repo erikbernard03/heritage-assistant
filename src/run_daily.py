@@ -133,13 +133,16 @@ def main() -> int:
         return 1
 
     # DOPO l'invio (così non ritarda il report): rinfresca la cache Klaviyo del mese CORRENTE
-    # su Supabase, così il primo load della dashboard è DB-only e veloce. Best-effort.
+    # su Supabase, poi warm-up UNA-TANTUM dei mesi PASSATI mancanti (sequenziale, idempotente:
+    # i mesi già in cache sono saltati per sempre). Così il primo load della dashboard è
+    # DB-only e veloce. Best-effort — eventuali errori non toccano il report già inviato.
     try:
-        from src.report import refresh_klaviyo_month_cache
+        from src.report import refresh_klaviyo_month_cache, warm_klaviyo_past_months
 
         refresh_klaviyo_month_cache()
+        warm_klaviyo_past_months()
     except Exception as exc:  # noqa: BLE001
-        print(f"[run_daily] klaviyo cache refresh skipped: {exc}", flush=True)
+        print(f"[run_daily] klaviyo cache refresh/warm-up skipped: {exc}", flush=True)
     return 0
 
 

@@ -258,6 +258,12 @@ class SupabaseStore:
             pass
         return {"kp": kp, "ts": ts}
 
+    def get_klaviyo_cached_months(self) -> set:
+        """Insieme dei mesi ('YYYY-MM') già presenti in cache (riga 'campaign')."""
+        res = (self.client.table("klaviyo_monthly_cache").select("month")
+               .eq("kind", "campaign").execute())
+        return {r.get("month") for r in (res.data or []) if r.get("month")}
+
     def upsert_klaviyo_month_cache(self, month: str, kp: dict) -> None:
         """
         Scrive la cache del mese (DELETE-then-INSERT per month, così i kind stale spariscono).
