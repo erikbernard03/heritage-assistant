@@ -304,7 +304,10 @@ def _compute_monthly() -> dict | None:
     except Exception:  # noqa: BLE001 — tabelle Stripe assenti finché non si esegue la migration
         payout_rows, dispute_rows = [], []
     # Per-store (sanity): {mese: {store: {revenue, orders, net_operating}}} da store_daily.
+    # In parallelo accumulo le tasse incassate per mese (tax_total, combinato .com+.co): servono
+    # alla riconciliazione Stripe (gross include le tasse → confronto gross vs revenue+tasse).
     per_store_by_month: dict = {}
+    tax_by_month: dict = {}
     try:
         for r in store.get_table_range("store_daily", "2000-01-01", today_iso):
             mkey = str(r.get("day", ""))[:7]
@@ -314,8 +317,10 @@ def _compute_monthly() -> dict | None:
             acc["revenue"] += float(r.get("revenue") or 0)
             acc["orders"] += int(r.get("orders") or 0)
             acc["cogs_total"] += float(r.get("cogs_total") or 0)
+            tax_by_month[mkey] = tax_by_month.get(mkey, 0.0) + float(r.get("tax_total") or 0)
     except Exception:  # noqa: BLE001 — migration 016 non ancora eseguita
         per_store_by_month = {}
+        tax_by_month = {}
     return {
         "months": months,
         "units_by_month": units_by_month(units_rows),
@@ -330,6 +335,7 @@ def _compute_monthly() -> dict | None:
         "source_by_month": sales_by_source_by_month(source_rows),
         "tw_pixel_by_month": tw_pixel_by_month(tw_pixel_rows),
         "per_store_by_month": per_store_by_month,
+        "tax_by_month": tax_by_month,
     }
 
 
@@ -399,7 +405,10 @@ def _render_period_highlights(m: dict, be: dict, meta_roas: float, be_note: str)
     p_roas = f"{be['profit_roas']:,.2f}x" if be.get("profit_roas") else "n/a"
     p_cpa = _usd(be["profit_cpa"]) if be.get("profit_cpa") is not None else "n/a"
     r1 = st.columns(2)
-    r1[0].metric("Revenue", _usd(m["revenue"]))
+    r1[0].metric("Revenue", _usd(m["revenue"]),
+                 help="Shopify revenue in USD — **excludes tax** (owed to the government, never "
+                      "ours) and **includes shipping** paid by the customer. Net of each order's "
+                      "own refunds, dated on the order day.")
     r1[1].metric("Net profit (net)", _usd(m["net_profit_netto"]))
     r2 = st.columns(2)
     r2[0].metric("Contribution break-even ROAS", c_roas)
@@ -948,6 +957,7 @@ def _render_stripe_money(monthly: dict) -> None:
     disputes = monthly.get("disputes") or []
     months = monthly.get("months") or []
     rev_by_month = {r["month"]: r["revenue"] for r in months}
+    tax_by_month = monthly.get("tax_by_month") or {}
 
     if not stripe_m and not refunds_m and not disputes:
         st.caption("No Stripe data yet — run migrations 012/013, add STRIPE_API_KEY, then "
@@ -955,27 +965,38 @@ def _render_stripe_money(monthly: dict) -> None:
         return
 
     # 1) Riconciliazione: Shopify revenue vs Stripe gross vs Stripe net vs payout.
+    #    Revenue ora ESCLUDE le tasse, ma lo Stripe gross INCLUDE le tasse pagate dal cliente:
+    #    quindi il confronto corretto è Stripe gross vs (revenue + tasse incassate). La colonna
+    #    "Tax collected" rende visibile la quota tasse e "Rev+tax" ricostruisce il lordo-tasse.
     st.markdown("**Reconciliation — Shopify vs Stripe vs payouts**")
     rec_rows = []
     for mn in sorted(set(rev_by_month) | set(stripe_m), reverse=True):
         s = stripe_m.get(mn, {})
-        rc = reconciliation_row(rev_by_month.get(mn, 0.0), s.get("gross", 0.0),
+        rev = rev_by_month.get(mn, 0.0)
+        tax = float(tax_by_month.get(mn, 0.0) or 0.0)
+        # diff calcolata su (revenue + tasse) perché lo Stripe gross include le tasse.
+        rc = reconciliation_row(rev + tax, s.get("gross", 0.0),
                                 s.get("net", 0.0), payouts_m.get(mn, 0.0))
         rec_rows.append({
             "Month": month_label(mn),
-            "Shopify rev": round(rc["shopify_revenue"], 2),
+            "Shopify rev": round(rev, 2),
+            "Tax collected": round(tax, 2),
+            "Rev+tax": round(rev + tax, 2),
             "Stripe gross": round(rc["stripe_gross"], 2),
             "Stripe net": round(rc["stripe_net"], 2),
             "Payouts": round(rc["payouts"], 2),
-            "Gross−Rev": round(rc["diff"], 2),
+            "Gross−(Rev+tax)": round(rc["diff"], 2),
             "Diff %": (round(rc["diff_pct"], 1) if rc["diff_pct"] is not None else None),
         })
     st.dataframe(pd.DataFrame(rec_rows), hide_index=True, use_container_width=True)
-    st.caption("Stripe gross < Shopify revenue is expected (PayPal share doesn't flow through "
-               "Stripe). Payouts can differ from net by timing (money arrives days later). "
-               "**Note:** heritagering.co uses **Shopify Payments** (not our Stripe), so .co "
-               "revenue never appears in this Stripe reconciliation — the Shopify-rev column "
-               "above is combined (.com + .co) while Stripe columns are .com only.")
+    st.caption("**Revenue excludes tax** (tax is owed to the government, never ours); **shipping "
+               "stays in revenue**. Stripe gross still includes the tax the customer paid, so the "
+               "match is **Stripe gross vs Rev+tax** (not vs revenue). Stripe gross < Rev+tax is "
+               "expected (PayPal share doesn't flow through Stripe). Payouts can differ from net "
+               "by timing (money arrives days later). **Note:** heritagering.co uses **Shopify "
+               "Payments** (not our Stripe), so .co revenue never appears in this Stripe "
+               "reconciliation — the Shopify columns above are combined (.com + .co) while Stripe "
+               "columns are .com only.")
 
     # 2) Costo di pagamento REALE vs stima: fee Stripe + surcharge Shopify (invisibile a Stripe).
     surcharge = settings.SHOPIFY_GATEWAY_SURCHARGE_PCT
@@ -1255,10 +1276,10 @@ def _render_per_store(monthly: dict) -> None:
     ad_by_month = {r["month"]: float(r.get("total_ad_spend") or 0.0)
                    for r in (monthly.get("months") or [])}
     st.subheader("🏪 Per store")
-    st.caption("Per-store split (from store_daily): revenue, orders, AOV, net operating, and "
-               "**contribution** break-even from each store's own AOV/COGS/fee (.com 7.5%, .co "
-               "5%). Profit break-even stays at TOTAL level only (fixed costs are one pot). "
-               "All ad spend is .com; .co is organic.")
+    st.caption("Per-store split (from store_daily): revenue (**excl. tax, incl. shipping**), "
+               "orders, AOV, net operating, and **contribution** break-even from each store's own "
+               "AOV/COGS/fee (.com 7.5%, .co 5%). Profit break-even stays at TOTAL level only "
+               "(fixed costs are one pot). All ad spend is .com; .co is organic.")
     _labels = {"com": "heritagering.com", "co": "heritagering.co"}
     rows = []
     for mn in sorted(per_store, reverse=True):

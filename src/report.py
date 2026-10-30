@@ -1002,12 +1002,22 @@ def _persist_product_units(store, metrics: DailyMetrics, store_label: str = "com
         return str(exc)[:200]
 
 
+def _fx_for_store(store_label: str) -> float:
+    """
+    Tasso valuta-base-store → USD per le aggregazioni per-store (country/hour/source), così
+    anche i breakdown passano dall'helper order_revenue_usd con l'fx giusto (revenue netto tasse
+    in USD). .com = USD (1.0); .co = settings.SHOPIFY_STORE_2_CURRENCY_TO_USD (come il connettore).
+    """
+    return settings.SHOPIFY_STORE_2_CURRENCY_TO_USD if store_label == "co" else 1.0
+
+
 def _persist_sales_by_country(store, day: str, orders: list[dict], store_label: str = "com") -> Optional[str]:
     """Vendite per paese del giorno per lo store. None se OK, altrimenti errore."""
     try:
         from src.metrics.sales_location import revenue_by_country
 
-        store.upsert_sales_by_country(day, revenue_by_country(orders), store=store_label)
+        agg = revenue_by_country(orders, currency_to_usd=_fx_for_store(store_label))
+        store.upsert_sales_by_country(day, agg, store=store_label)
         return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ sales_by_country non salvate per {day}/{store_label}: {exc}")
@@ -1019,7 +1029,8 @@ def _persist_sales_by_hour(store, day: str, orders: list[dict], store_label: str
     try:
         from src.metrics.sales_timing import revenue_by_hour
 
-        store.upsert_sales_by_hour(day, revenue_by_hour(orders), store=store_label)
+        agg = revenue_by_hour(orders, currency_to_usd=_fx_for_store(store_label))
+        store.upsert_sales_by_hour(day, agg, store=store_label)
         return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ sales_by_hour non salvate per {day}/{store_label}: {exc}")
@@ -1031,7 +1042,8 @@ def _persist_sales_by_source(store, day: str, orders: list[dict], store_label: s
     try:
         from src.metrics.sales_source import revenue_by_source
 
-        store.upsert_orders_by_source(day, revenue_by_source(orders), store=store_label)
+        agg = revenue_by_source(orders, currency_to_usd=_fx_for_store(store_label))
+        store.upsert_orders_by_source(day, agg, store=store_label)
         return None
     except Exception as exc:  # noqa: BLE001 — non bloccare il salvataggio principale
         print(f"[report] ⚠️ orders_by_source non salvate per {day}/{store_label}: {exc}")

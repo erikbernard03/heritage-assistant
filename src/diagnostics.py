@@ -656,7 +656,11 @@ def _f(v) -> float:
 
 def summarize_orders(orders: list[dict]) -> dict:
     """Aggregazione pura degli ordini di un giorno (testabile, niente rete)."""
-    from src.metrics.profit import _order_shipping_collected, _order_tax_collected
+    from src.metrics.profit import (
+        _order_current_tax,
+        _order_shipping_collected,
+        _order_tax_collected,
+    )
 
     active = [o for o in orders if not o.get("cancelled_at")]
     cancelled = [o for o in orders if o.get("cancelled_at")]
@@ -667,6 +671,9 @@ def summarize_orders(orders: list[dict]) -> dict:
 
     total = sum(_f(o.get("total_price")) for o in active)
     current = sum(_current(o) for o in active)
+    # Tasse ATTUALI (nette dei rimborsi) e revenue del REPORT = current_total_price − tasse attuali.
+    current_tax = sum(_order_current_tax(o) for o in active)
+    report_revenue = current - current_tax
     refunded_orders = [
         o for o in active
         if (_f(o.get("total_price")) - _current(o) > 0.005)
@@ -675,8 +682,10 @@ def summarize_orders(orders: list[dict]) -> dict:
     return {
         "n_active": len(active),
         "n_cancelled": len(cancelled),
-        "total_price": total,                                        # = report revenue
-        "current_total": current,                                   # dopo i refund
+        "total_price": total,                                        # lordo (gross, pre-refund)
+        "current_total": current,                                   # dopo i refund (incl. tasse)
+        "current_tax": current_tax,                                 # tasse attuali (nette refund)
+        "report_revenue": report_revenue,                           # = current − tasse attuali
         "refunded_amount": total - current,
         "subtotal": sum(_f(o.get("subtotal_price")) for o in active),  # prodotto (post-sconti, no tax/ship)
         "tax": sum(_order_tax_collected(o) for o in active),
@@ -706,18 +715,22 @@ def day_audit(day: str) -> str:
 
     s = summarize_orders(orders)
     out.append(f"Active orders: {s['n_active']} · cancelled: {s['n_cancelled']}")
-    out.append(f"Σ total_price (REPORT revenue): ${s['total_price']:,.2f}")
+    out.append(f"Σ total_price (gross, pre-refund): ${s['total_price']:,.2f}")
     out.append(
-        f"Σ current_total_price (after refunds): ${s['current_total']:,.2f}  "
+        f"Σ current_total_price (after refunds, incl tax): ${s['current_total']:,.2f}  "
         f"→ refunded ${s['refunded_amount']:,.2f}"
     )
+    out.append(f"Σ current_total_tax (tax, net of refunds): ${s['current_tax']:,.2f}")
+    out.append(
+        f"⇒ REPORT revenue (current − tax, **tax excluded**): ${s['report_revenue']:,.2f}"
+    )
     out.append(f"Σ subtotal_price (product only, post-discount, excl tax+ship): ${s['subtotal']:,.2f}")
-    out.append(f"Σ total_tax (VAT collected): ${s['tax']:,.2f}")
+    out.append(f"Σ total_tax (gross VAT, pre-refund): ${s['tax']:,.2f}")
     out.append(f"Σ shipping collected: ${s['shipping']:,.2f}")
     out.append(f"check subtotal+tax+shipping = ${s['subtotal'] + s['tax'] + s['shipping']:,.2f}")
     out.append(
-        f"so: revenue−tax = ${s['total_price'] - s['tax']:,.2f} · "
-        f"revenue−tax−shipping = ${s['total_price'] - s['tax'] - s['shipping']:,.2f}"
+        f"so: gross−tax = ${s['total_price'] - s['tax']:,.2f} · "
+        f"gross−tax−shipping = ${s['total_price'] - s['tax'] - s['shipping']:,.2f}"
     )
 
     # stored daily_metrics

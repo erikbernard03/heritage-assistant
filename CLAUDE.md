@@ -58,7 +58,8 @@ le risposte libere. Nessun numero del report deve mai passare da un LLM.
 ## Formula Net Profit (codice puro)
 ```
 net_profit_giorno =
-    revenue_reale_shopify
+    revenue_reale_shopify   (= current_total_price − current_total_tax; TASSE ESCLUSE, spedizione
+                             inclusa; netto dei rimborsi; in USD. Le tasse non sono mai nostre.)
   − COGS_totale            (somma per line item via mappa SKU/handle; $0 o sconosciuto = $3)
   − costi_spedizione       ($7 × numero_ordini)
   − fee_pagamenti          (7.5% × revenue)

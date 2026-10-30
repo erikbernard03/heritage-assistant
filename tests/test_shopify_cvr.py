@@ -133,5 +133,5 @@ def test_report_has_no_separate_vat_or_shipping_income_lines():
     assert "VAT collected" not in text
     assert "Premium shipping collected" not in text
     assert "*2) COST BREAKDOWN*" in text
-    # revenue resta total_price (IVA+spedizione incluse una volta)
+    # revenue = prezzo netto tasse (IVA esclusa, spedizione inclusa); mostrata una sola volta
     assert "Revenue: *$1,000.00*" in text

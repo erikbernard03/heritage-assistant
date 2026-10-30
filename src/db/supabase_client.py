@@ -204,6 +204,9 @@ class SupabaseStore:
             "payment_fees": round(float(metrics.payment_fees), 2),
             "ads_spend": round(float(metrics.ads_spend), 2),
             "net_profit_operativo": round(float(metrics.net_profit_operativo), 2),
+            # Tasse incassate (ESCLUSE da revenue) per mese/store — serve alla riconciliazione
+            # Stripe sui mesi vecchi. current_total_tax netto, in USD (migration 019).
+            "tax_total": round(float(getattr(metrics, "tax_collected", 0.0) or 0.0), 2),
             **({"store_sessions": int(metrics.store_sessions)}
                if metrics.store_sessions is not None else {}),
         }).execute()

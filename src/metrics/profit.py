@@ -54,17 +54,51 @@ def _shop_money(order: dict, *keys) -> Optional[float]:
     return None
 
 
+def _order_current_tax(order: dict) -> float:
+    """
+    Tasse ATTUALI dell'ordine nella VALUTA BASE dello store (`current_total_tax`), nette dei
+    rimborsi esattamente come `current_total_price`. Preferisce `current_total_tax_set.shop_money`;
+    fallback al `current_total_tax` top-level. Campo assente/null => 0.
+
+    NB: usiamo SEMPRE `current_total_tax` (MAI il `total_tax` lordo): così la tassa rimborsata
+    viene nettata allo stesso modo in cui `current_total_price` netta i rimborsi dell'ordine.
+    """
+    tax = _shop_money(order, "current_total_tax_set")
+    if tax is None:
+        t = order.get("current_total_tax")
+        tax = _to_float(t) if t not in (None, "") else 0.0
+    return tax
+
+
 def order_revenue_usd(order: dict, currency_to_usd: float = 1.0) -> float:
     """
-    Revenue dell'ordine in USD, multi-valuta:
-      - usa `current_total_price_set.shop_money` (importo nella VALUTA BASE dello store, già
-        convertito da Shopify dal presentment) → moltiplicato per `currency_to_usd`;
-      - fallback: total_price_set.shop_money, poi current_total_price/total_price (top-level).
-    Per lo store .com (valuta base USD, currency_to_usd=1.0) coincide con order_revenue.
+    Revenue dell'ordine in USD, multi-valuta e **AL NETTO DELLE TASSE**:
+
+        revenue = current_total_price − current_total_tax        (valuta base dello store)
+                × currency_to_usd
+
+      - prezzo: `current_total_price_set.shop_money` (importo nella VALUTA BASE dello store, già
+        convertito da Shopify dal presentment); fallback total_price_set.shop_money, poi
+        current_total_price/total_price (top-level);
+      - tasse: `current_total_tax` (shop_money, netto dei rimborsi), assente/null => 0;
+      - il tutto × `currency_to_usd` (così la logica multi-valuta del .co continua a funzionare).
+
+    Le tasse NON sono mai nostre (sono dovute allo Stato): non entrano MAI in revenue né in
+    profit. Per lo store .com (valuta base USD, currency_to_usd=1.0) revenue = prezzo − tasse.
     """
     shop = _shop_money(order, "current_total_price_set", "total_price_set")
-    base = shop if shop is not None else order_revenue(order)
-    return base * float(currency_to_usd or 1.0)
+    price = shop if shop is not None else order_revenue(order)
+    tax = _order_current_tax(order)
+    return (price - tax) * float(currency_to_usd or 1.0)
+
+
+def order_tax_usd(order: dict, currency_to_usd: float = 1.0) -> float:
+    """
+    Tasse incassate sull'ordine in USD (`current_total_tax`, netto dei rimborsi) × fx.
+    Serve per la riga 'Tax collected' della riconciliazione Stripe e per store_daily.tax_total.
+    Non è revenue: è solo visibilità (le tasse sono dovute allo Stato).
+    """
+    return _order_current_tax(order) * float(currency_to_usd or 1.0)
 
 
 def _is_cancelled(order: dict) -> bool:
@@ -85,7 +119,9 @@ def _order_shipping_collected(order: dict) -> float:
 
 
 def _order_tax_collected(order: dict) -> float:
-    """IVA/tasse incassate dal cliente (income)."""
+    """IVA/tasse LORDE incassate dal cliente (`total_tax`, pre-rimborso). Usato SOLO dall'audit
+    diagnostico per la verifica dell'identità lorda subtotal+tax+shipping = total_price.
+    Per le metriche (revenue/visibilità) si usa `order_tax_usd` (current_total_tax, netto)."""
     return _to_float(order.get("total_tax"))
 
 
@@ -115,17 +151,19 @@ class DailyMetrics:
     net_profit_operativo: float = 0.0   # senza costi fissi
     net_profit_netto: float = 0.0       # con costi fissi
     aov: float = 0.0
-    # Income già INCLUSO in `revenue` (total_price), separato per visibilità (no double count):
-    shipping_collected: float = 0.0     # spedizione premium pagata dal cliente
-    tax_collected: float = 0.0          # IVA/tasse incassate
+    # Spedizione: income già INCLUSO in `revenue`, separato per visibilità (no double count).
+    # Tasse: NON più in `revenue` (escluse); `tax_collected` resta solo per visibilità/riconcilio.
+    shipping_collected: float = 0.0     # spedizione premium pagata dal cliente (dentro revenue)
+    tax_collected: float = 0.0          # IVA/tasse incassate (ESCLUSE da revenue; solo visibilità)
     store_cvr: float = 0.0              # CVR negozio (Shopify primario, TW fallback); frazione
     store_sessions: Optional[int] = None  # sessioni/visitatori reali Shopify (None se non disp.)
     line_items: list[LineItemCost] = field(default_factory=list)
 
     @property
     def product_revenue(self) -> float:
-        """Revenue di solo prodotto = total_price − spedizione incassata − IVA incassata."""
-        return self.revenue - self.shipping_collected - self.tax_collected
+        """Revenue di solo prodotto = revenue (già netto tasse) − spedizione incassata.
+        Le tasse sono GIÀ escluse da `revenue`, quindi NON si sottraggono di nuovo."""
+        return self.revenue - self.shipping_collected
 
     def as_db_row(self) -> dict:
         """Riga per la tabella daily_metrics (tutto in USD)."""
@@ -178,12 +216,14 @@ def compute_daily_metrics(
             continue
 
         order_id = int(order.get("id", 0))
-        # Revenue = current_total_price in USD (netto rimborsi propri, datato sull'ordine).
+        # Revenue = (current_total_price − current_total_tax) in USD (netto rimborsi propri e
+        # AL NETTO DELLE TASSE, datato sull'ordine). Le tasse non sono mai nostre.
         revenue = order_revenue_usd(order, currency_to_usd)
         m.revenue += revenue
-        # spedizione + IVA sono GIÀ dentro total_price: le separiamo solo per mostrarle
+        # spedizione è GIÀ dentro revenue (la separiamo solo per mostrarla); le tasse NON sono
+        # in revenue (escluse) ma le tracciamo per la riconciliazione Stripe e store_daily.
         m.shipping_collected += _order_shipping_collected(order)
-        m.tax_collected += _order_tax_collected(order)
+        m.tax_collected += order_tax_usd(order, currency_to_usd)
         m.num_orders += 1
 
         for li in order.get("line_items", []):

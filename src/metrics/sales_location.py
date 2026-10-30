@@ -2,12 +2,12 @@
 Vendite per PAESE (sales by location) dai line/ordini Shopify. Codice puro/deterministico.
 
 Il paese è quello di SPEDIZIONE dell'ordine (shipping_address.country_code), con fallback
-all'indirizzo di fatturazione e infine 'Unknown'. Revenue = total_price (come nel report).
-Gli ordini cancellati sono esclusi.
+all'indirizzo di fatturazione e infine 'Unknown'. Revenue = come nel report (al netto delle
+tasse, in USD, via order_revenue_usd). Gli ordini cancellati sono esclusi.
 """
 from __future__ import annotations
 
-from src.metrics.profit import order_revenue
+from src.metrics.profit import order_revenue_usd
 
 
 def _to_float(value) -> float:
@@ -27,10 +27,11 @@ def country_of(order: dict) -> str:
     return "Unknown"
 
 
-def revenue_by_country(orders: list[dict]) -> dict[str, dict]:
+def revenue_by_country(orders: list[dict], currency_to_usd: float = 1.0) -> dict[str, dict]:
     """
     {country: {revenue, orders}} dagli ordini del giorno (cancellati esclusi).
-    Revenue in USD (total_price, come la revenue del report).
+    Revenue in USD, AL NETTO DELLE TASSE, via order_revenue_usd (stesso helper del report).
+    `currency_to_usd`: fx valuta-base-store → USD (1.0 per il .com; tasso del .co per lo store 2).
     """
     out: dict[str, dict] = {}
     for o in orders:
@@ -38,7 +39,7 @@ def revenue_by_country(orders: list[dict]) -> dict[str, dict]:
             continue
         c = country_of(o)
         acc = out.setdefault(c, {"revenue": 0.0, "orders": 0})
-        acc["revenue"] += order_revenue(o)
+        acc["revenue"] += order_revenue_usd(o, currency_to_usd)
         acc["orders"] += 1
     return out
 

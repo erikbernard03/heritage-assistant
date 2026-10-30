@@ -10,7 +10,7 @@ from datetime import datetime
 import pytz
 
 from config import settings
-from src.metrics.profit import order_revenue
+from src.metrics.profit import order_revenue_usd
 
 
 def _to_float(value) -> float:
@@ -34,10 +34,12 @@ def _parse_iso(ts: str) -> datetime | None:
     return dt
 
 
-def revenue_by_hour(orders: list[dict], tz_name: str | None = None) -> dict[int, dict]:
+def revenue_by_hour(orders: list[dict], tz_name: str | None = None,
+                    currency_to_usd: float = 1.0) -> dict[int, dict]:
     """
     {ora(0–23): {revenue, orders}} dagli ordini del giorno, per ORA di Europe/Rome
-    (created_at convertito). Cancellati esclusi. Revenue = total_price (USD).
+    (created_at convertito). Cancellati esclusi. Revenue in USD AL NETTO DELLE TASSE
+    (order_revenue_usd). `currency_to_usd`: fx valuta-base-store → USD (1.0 .com, tasso .co).
     """
     tz = pytz.timezone(tz_name or settings.TIMEZONE)
     out: dict[int, dict] = {}
@@ -49,7 +51,7 @@ def revenue_by_hour(orders: list[dict], tz_name: str | None = None) -> dict[int,
             continue
         hour = dt.astimezone(tz).hour
         acc = out.setdefault(hour, {"revenue": 0.0, "orders": 0})
-        acc["revenue"] += order_revenue(o)
+        acc["revenue"] += order_revenue_usd(o, currency_to_usd)
         acc["orders"] += 1
     return out
 
