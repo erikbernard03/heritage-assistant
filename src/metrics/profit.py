@@ -6,7 +6,8 @@ Formula net profit giornaliero (Fase 1, solo Shopify => spesa ads = 0):
     net_profit =
         revenue_reale_shopify
       − COGS_totale            (somma per line item via handle; $0/sconosciuto = $3)
-      − costi_spedizione       ($7 × numero_ordini)
+      − costi_spedizione       (datati: flat $7×ordini prima del 2026-11-01; dal 2026-11-01
+                                formula per-ordine country_base+piece_surcharge, somma per-ordine)
       − fee_pagamenti          (7.5% × revenue)
       − spesa_ads_totale       (Meta+Google+TikTok; in Fase 1 = 0)
       − quota_costi_fissi      ($6.117 / 30 ≈ $203.90/giorno)  [attivabile/disattivabile]
@@ -225,13 +226,17 @@ def compute_daily_metrics(
         m.shipping_collected += _order_shipping_collected(order)
         m.tax_collected += order_tax_usd(order, currency_to_usd)
         m.num_orders += 1
+        # Spedizione DATATA e per-ordine: prima del 2026-11-01 flat $7; dal 2026-11-01 formula
+        # country_base + piece_surcharge (resolver, su data Rome del giorno). Cancellati esclusi
+        # (siamo dentro il filtro cancelled). currency-agnostica (tariffe già in USD).
+        m.shipping_total += resolver.shipping_for_order(order, day)
 
         for li in order.get("line_items", []):
             product_id = li.get("product_id")
             handle = handle_map.get(int(product_id)) if product_id else None
             title = li.get("title") or ""
             qty = int(li.get("quantity", 1) or 1)
-            unit_cogs = resolver.cogs_for_handle(handle, title)
+            unit_cogs = resolver.cogs_for_handle(handle, title, order_date=day)
             line_cogs = unit_cogs * qty
             m.cogs_total += line_cogs
             m.line_items.append(
@@ -248,7 +253,8 @@ def compute_daily_metrics(
                 )
             )
 
-    m.shipping_total = settings.SPEDIZIONE_PER_ORDINE * m.num_orders
+    # m.shipping_total è già sommato per-ordine nel loop (formula datata). NB: i giorni
+    # pre-2026-11-01 danno flat $7/ordine, quindi == settings.SPEDIZIONE_PER_ORDINE × ordini.
     m.payment_fees = fee_rate * m.revenue          # aliquota per-store
     m.ads_spend = ads_spend
 
@@ -313,7 +319,8 @@ def compute_breakeven_full(prev_days_rows: list[dict], fee_rate: Optional[float]
       avg_COGS/ordine  = Σ(cogs)    / Σ(ordini)
 
     CONTRIBUTION break-even (esclude i costi fissi):
-      contrib/ordine   = avg_AOV − avg_COGS/ordine − fee/ordine(fee_rate·AOV) − spedizione($7)
+      contrib/ordine   = avg_AOV − avg_COGS/ordine − fee/ordine(fee_rate·AOV) − spedizione/ordine
+                         (spedizione/ordine = Σ(shipping_total)/Σ(ordini) POOLED dalla finestra)
       contribution CPA = contrib/ordine   ·  contribution ROAS = avg_AOV / contrib/ordine
 
     PROFIT break-even (include la quota costi fissi, dipende dal VOLUME ordini):
@@ -337,13 +344,22 @@ def compute_breakeven_full(prev_days_rows: list[dict], fee_rate: Optional[float]
     if total_orders <= 0:
         return empty
 
+    # Spedizione/ordine POOLED dalla stessa finestra (come COGS/ordine): Σ(shipping)/Σ(ordini).
+    # Usa i valori REALI salvati per-giorno (shipping_total), quindi gestisce da sé la transizione
+    # al 2026-11-01 (finestre a cavallo pescano i veri valori per-giorno). Se nessuna riga porta
+    # 'shipping_total' (chiamanti legacy/minimali), fallback al flat storico $7/ordine.
     avg_aov = total_rev / total_orders
     avg_cogs_per_order = total_cogs / total_orders
+    if any("shipping_total" in r for r in prev_days_rows):
+        total_shipping = sum(_to_float(r.get("shipping_total")) for r in prev_days_rows)
+        shipping_per_order = total_shipping / total_orders
+    else:
+        shipping_per_order = float(settings.SPEDIZIONE_PER_ORDINE)
     be_cpa = (
         avg_aov
         - avg_cogs_per_order
         - fee_rate * avg_aov
-        - settings.SPEDIZIONE_PER_ORDINE
+        - shipping_per_order
     )
     be_roas = (avg_aov / be_cpa) if be_cpa > 0 else None
 

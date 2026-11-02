@@ -236,11 +236,14 @@ def gross_and_blended(revenue: float, cogs: float,
 
 
 def month_unit_economics(revenue: float, cogs: float, orders: int,
-                         day_strs: list[str] | None = None) -> dict:
+                         day_strs: list[str] | None = None,
+                         shipping_total: float | None = None) -> dict:
     """
     Economia unitaria del mese dai SUOI totali:
       - gross_per_order   = (revenue − COGS) ÷ ordini
-      - CONTRIBUTION break-even CPA = AOV − COGS/ordine − 7.5%·AOV − $7 (esclude i costi fissi)
+      - CONTRIBUTION break-even CPA = AOV − COGS/ordine − 7.5%·AOV − spedizione/ordine (esclude i
+        costi fissi). spedizione/ordine = shipping_total REALE del mese ÷ ordini (datata); se non
+        passata, fallback al flat storico $7/ordine.
       - CONTRIBUTION break-even ROAS = AOV ÷ CPA
       - PROFIT break-even = contribution CPA − quota fissa/ordine, dove quota fissa/ordine =
         Σ quota giornaliera DATATA del mese (da FIXED_COSTS_SCHEDULE, via `day_strs`) ÷ ordini.
@@ -257,9 +260,10 @@ def month_unit_economics(revenue: float, cogs: float, orders: int,
     aov = _f(revenue) / orders
     cogs_per_order = _f(cogs) / orders
     gross_per_order = (_f(revenue) - _f(cogs)) / orders
-    be_roas, be_cpa = compute_breakeven(
-        [{"revenue": _f(revenue), "num_orders": orders, "cogs_total": _f(cogs)}]
-    )
+    be_row = {"revenue": _f(revenue), "num_orders": orders, "cogs_total": _f(cogs)}
+    if shipping_total is not None:
+        be_row["shipping_total"] = _f(shipping_total)   # spedizione reale del mese (datata)
+    be_roas, be_cpa = compute_breakeven([be_row])
     # PROFIT break-even con la quota fissa DATATA del mese (Σ giornaliere ÷ ordini).
     profit_be_cpa = profit_be_roas = fixed_per_order = None
     if be_cpa is not None and day_strs:

@@ -109,3 +109,140 @@ bracelets:
   carnelian-bead-bracelet: 3
   white-edge-bracelet: 3
   blue-edge-bracelet: 3
+
+# =====================================================================================
+# COGS DATATO — overlay in vigore dal 2026-11-01 (fatture HyperSKU M26–M29).
+# I giorni PRIMA della prima effective_from usano i valori BASE qui sopra (invariati:
+# il resolver senza data, e ogni data < 2026-11-01, risolve ESATTAMENTE come oggi).
+# Ogni overlay elenca SOLO ciò che cambia e si FONDE con la base:
+#   - exact_titles / custom_products / classic_rings / bracelets: le chiavi dell'overlay
+#     vincono, il resto è ereditato dalla base;
+#   - title_rules (se presente) SOSTITUISCE l'intera lista base (stessa priorità/ordine).
+# Il resolver prende la DATA ROME dell'ordine. Vale per ENTRAMBI gli store.
+# =====================================================================================
+cogs_schedule:
+  - effective_from: "2026-11-01"
+    title_rules:
+      - keywords: [personalized, coat, arms, necklace]   # Coat of Arms Necklace
+        cogs: 8.27
+      - keywords: [personalized, coat, arms, bracelet]   # Coat of Arms Bracelet
+        cogs: 8.27
+      - keywords: [personalized, sterling, signet]       # Sterling Silver Signet (varianti)
+        cogs: 49.03
+      - keywords: [square, signet]                       # Square signets (PRIMA del generico)
+        cogs: 8.62
+      - keywords: [personalized, signet]                 # Round personalized signets (varianti)
+        cogs: 11.46
+      - keywords: [ring, size, adjuster]                 # Ring Size Adjuster Kit
+        cogs: 1.72
+    custom_products:
+      personalized-sterling-silver-signet-ring: 49.03
+      personalized-wooden-ring-box: 2.82
+    exact_titles:
+      # Signets personalizzati (round / square / sterling) — vincono sulle famiglie
+      "Personalized Gold Plated Signet Ring": 11.46
+      "Personalized White Gold Plated Signet Ring": 11.46
+      "Personalized Silver Plated Signet Ring": 11.46
+      "Personalized Sterling Silver Signet Ring": 49.03
+      "Personalized Gold Plated Square Signet Ring": 8.62
+      "Personalized White Gold Plated Square Signet Ring": 8.62
+      # Box / organizer / cufflinks
+      "Personalized Wooden Ring Box": 2.82
+      "Matte Dark Brown Jewelry Organizer": 2.82
+      "Personalized Cufflinks": 14.11
+      # Coat of Arms
+      "Personalized Coat of Arms Bracelet": 8.27
+      "Personalized Coat of Arms Necklace": 8.27
+      # Ring with Diamond (signet variant) — TITOLO DA CONFERMARE sullo store
+      "Ring with Diamond": 12.92
+      # Black Onyx Signet Ring — deve vincere sulle famiglie signet
+      "Black Onyx Signet Ring": 2.97
+      # Stone signet rings — $2.95
+      "Carnelian Signet Ring": 2.95
+      "Lapis Signet Ring": 2.95
+      "Lapis Lazuli Signet Ring": 2.95
+      "Tiger's Eye Signet Ring": 2.95
+      "Tiger's Eye Square Signet Ring": 2.95
+      "Green Stone Signet Ring": 2.95
+      "Malachite Signet Ring": 2.95
+      # Oval / minimal / diamond-inset — $3.45
+      "Oval Onyx Pinky Ring": 3.45
+      "Minimal Oval Signet Ring": 3.45
+      "Diamond Inset Ring": 3.45
+      # Cross texture — $3.53
+      "Cross Texture Ring": 3.53
+      # Bracelets (non-PRE-ORDER) — $2.58
+      "Fleur-de-Lis Bracelet": 2.58
+      "Cable Bracelet": 2.58
+      # Size adjuster — $1.72
+      "Ring Size Adjuster Kit": 1.72
+    classic_rings:
+      carnelian-signet-ring: 2.95
+      green-stone-signet-ring: 2.95
+      lapis-lazuli-signet-ring: 2.95
+      tiger-s-eye-signet-ring: 2.95
+      tiger-s-eye-signet-ring-copy: 2.95     # Tiger's Eye Square Signet Ring
+      black-onyx-signet-ring: 2.97
+      diamond-inset-ring: 3.45
+      minimal-oval-signet-ring: 3.45
+      oval-pinky-ring: 3.45                   # Oval Onyx Pinky Ring
+      cross-texture-ring: 3.53
+      # NON toccati (nessun valore fornito, restano $3): turquoise-blue-signet-ring,
+      # black-stone-square-signet-ring, oval-carnelian-pinky-ring
+    bracelets:
+      cable-bracelet: 2.58
+      fleur-de-lis-bracelet-1: 2.58
+      # NON toccati (restano $3): i bead/pearl/edge bracelets
+
+# =====================================================================================
+# SPEDIZIONE DATATA — prima del 2026-11-01: flat $7/ordine (INVARIATO). Dal 2026-11-01:
+# formula per-ordine = country_base (per paese di spedizione ISO) + piece_surcharge
+# (per numero di PEZZI fisici spediti). USD, entrambi gli store. Rate/surcharge da config.
+# =====================================================================================
+shipping:
+  schedule:
+    - effective_from: "0001-01-01"
+      flat_per_order: 7
+    - effective_from: "2026-11-01"
+      country_base:
+        GB: 3.90
+        DE: 5.10
+        ES: 5.10
+        FR: 5.10
+        IT: 5.10
+        NL: 5.10
+        SE: 5.10
+        MX: 5.10
+        NZ: 5.10
+        CA: 5.90
+        AU: 5.90
+        US: 6.50
+        CH: 6.50
+      default_country_base: 6.50     # qualsiasi altro paese / paese mancante
+      piece_surcharge:               # pezzi -> surcharge USD
+        1: 0.00
+        2: 1.70
+        3: 3.10
+        4: 4.70
+        5: 5.10
+        6: 5.40
+      # 7+ pezzi: overflow_base + overflow_step * (pezzi - overflow_from)
+      piece_surcharge_overflow_from: 6
+      piece_surcharge_overflow_base: 5.40
+      piece_surcharge_overflow_step: 0.80
+      # Titoli NON spediti: esclusi dal conteggio pezzi (match per slug/token sul titolo).
+      # Box, organizer e size-adjuster NON sono qui -> CONTANO come pezzi.
+      exclude_titles:
+        - tip
+        - gratuity
+        - gift card
+        - e-gift card
+        - gift voucher
+        - shipping protection
+        - package protection
+        - route
+        - insurance
+        - digital
+        - download
+        - warranty
+        - donation

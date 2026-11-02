@@ -313,10 +313,11 @@ def _compute_monthly() -> dict | None:
             mkey = str(r.get("day", ""))[:7]
             skey = r.get("store") or "com"
             acc = per_store_by_month.setdefault(mkey, {}).setdefault(
-                skey, {"revenue": 0.0, "orders": 0, "cogs_total": 0.0})
+                skey, {"revenue": 0.0, "orders": 0, "cogs_total": 0.0, "shipping_total": 0.0})
             acc["revenue"] += float(r.get("revenue") or 0)
             acc["orders"] += int(r.get("orders") or 0)
             acc["cogs_total"] += float(r.get("cogs_total") or 0)
+            acc["shipping_total"] += float(r.get("shipping_total") or 0)
             tax_by_month[mkey] = tax_by_month.get(mkey, 0.0) + float(r.get("tax_total") or 0)
     except Exception:  # noqa: BLE001 — migration 016 non ancora eseguita
         per_store_by_month = {}
@@ -420,9 +421,11 @@ def _render_period_highlights(m: dict, be: dict, meta_roas: float, be_note: str)
     r4[0].metric("Meta ROAS", f"{float(meta_roas or 0):,.2f}x" if meta_roas else "n/a")
     apd = be.get("avg_orders_per_day")
     apd_s = f" (~{apd:.1f} orders/day)" if apd else ""
+    from src.config_loader import get_resolver
     st.caption(f"Break-even from the **{be_note}**, pooled totals. **Contribution** excludes "
                f"fixed costs; **Profit** adds the fixed-cost allocation per order and therefore "
-               f"**depends on order volume**{apd_s}.")
+               f"**depends on order volume**{apd_s}. Shipping/order is pooled from the window "
+               f"(Σ shipping ÷ Σ orders): {get_resolver().shipping_caption()}")
 
 
 def _render_kpis(m: dict) -> None:
@@ -490,9 +493,10 @@ def _render_meta_campaigns(camps: list[dict]) -> None:
 
 def _render_cost_breakdown(m: dict, num_days: int) -> None:
     st.subheader("Cost breakdown")
+    _ship_po = (m["shipping_total"] / m["num_orders"]) if m.get("num_orders") else 0.0
     rows = [
         ("Product COGS", m["cogs_total"]),
-        (f"Shipping cost ($7 × {m['num_orders']})", m["shipping_total"]),
+        (f"Shipping cost (avg {_usd(_ship_po)}/order × {m['num_orders']})", m["shipping_total"]),
         ("Payment fees (7.5%)", m["payment_fees"]),
         ("Ad spend (Meta + TikTok + Google)", m["ads_spend"]),
         (f"Fixed-costs allocation (× {num_days} days)", m["fixed_cost_daily"]),
@@ -771,13 +775,16 @@ def _render_unit_economics(months: list[dict]) -> None:
     if not months:
         return
     st.subheader("💰 How much I can spend on ads")
+    from src.config_loader import get_resolver
     st.caption("Per month, from that month's own totals and that month's dated fixed allocation. "
                "**Contribution** break-even excludes fixed costs (max ad $/order to cover variable "
                "costs); **Profit** break-even also covers the fixed-cost share per order and so "
-               "depends on the month's order volume.")
+               "depends on the month's order volume. Shipping/order is the month's real pooled "
+               "value (Σ shipping ÷ Σ orders): " + get_resolver().shipping_caption())
     for r in sorted(months, key=lambda x: x["month"], reverse=True):
         u = month_unit_economics(r["revenue"], r["cogs_total"], r["orders"],
-                                 day_strs=r.get("day_strs") or [])
+                                 day_strs=r.get("day_strs") or [],
+                                 shipping_total=r.get("shipping_total"))
         st.markdown(f"**{month_label(r['month'])}**"
                     + (" _(partial)_" if r.get("partial") else ""))
         c1, c2 = st.columns(2)
@@ -1290,11 +1297,13 @@ def _render_per_store(monthly: dict) -> None:
             rev, orders, cogs = v["revenue"], int(v["orders"]), v["cogs_total"]
             rate = store_fee_rate(s)
             ads = ad_by_month.get(mn, 0.0) if s == "com" else 0.0
-            shipping = 7 * orders
+            # Spedizione REALE del mese/store (dated) da store_daily; break-even pooled la usa.
+            shipping = float(v.get("shipping_total") or 0.0)
             fees = rate * rev
             net_op = rev - cogs - shipping - fees - ads
             be = compute_breakeven_full(
-                [{"revenue": rev, "num_orders": orders, "cogs_total": cogs}], fee_rate=rate)
+                [{"revenue": rev, "num_orders": orders, "cogs_total": cogs,
+                  "shipping_total": shipping}], fee_rate=rate)
             rows.append({
                 "Month": month_label(mn),
                 "Store": _labels.get(s, s),

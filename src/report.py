@@ -256,6 +256,7 @@ def _own_day_breakeven(m: DailyMetrics):
 
     return compute_breakeven_full([{
         "revenue": m.revenue, "num_orders": m.num_orders, "cogs_total": m.cogs_total,
+        "shipping_total": m.shipping_total,   # spedizione REALE del giorno (datata, pooled)
         "day": m.day,
     }])
 
@@ -1471,7 +1472,9 @@ def format_report(
         out.append(_margin_line(m))
         out.append("\n*2) COST BREAKDOWN*")
         out.append(f"   • Product COGS: −${m.cogs_total:,.2f}")
-        out.append(f"   • Shipping cost ($7 × {m.num_orders}): −${m.shipping_total:,.2f}")
+        _ship_po = (m.shipping_total / m.num_orders) if m.num_orders else 0.0
+        out.append(f"   • Shipping cost (avg ${_ship_po:,.2f}/order × {m.num_orders}): "
+                   f"−${m.shipping_total:,.2f}")
         out.append(f"   • Payment fees (7.5%): −${m.payment_fees:,.2f}")
         if m.ads_spend > 0:
             out.append(f"   • Ad spend (Meta + TikTok + Google): −${m.ads_spend:,.2f}")
