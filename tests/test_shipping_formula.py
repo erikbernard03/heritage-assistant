@@ -82,6 +82,21 @@ def test_breakeven_uses_pooled_shipping_from_rows():
     assert round(be["cpa"], 4) == round(expected_cpa, 4)
 
 
+def test_exclusion_matches_whole_words_only():
+    # "route" NON deve agganciare un titolo in cui "route" è dentro una parola più lunga.
+    o = _order("US", [
+        ("Reroute Signet Ring", 1),      # 'reroute' != 'route' -> CONTA
+        ("Scenic Pendant", 1),           # CONTA
+    ])
+    assert R.order_pieces(o, NEW) == 2
+    # mentre "Route" come parola intera (app di insurance) è escluso
+    o2 = _order("US", [("Route Protection", 1), ("Signet Ring", 1)])
+    assert R.order_pieces(o2, NEW) == 1
+    # frase multi-parola "gift card" esclusa come parole intere; "giftcardholder" no
+    o3 = _order("US", [("Gift Card", 1), ("Signet Ring", 1)])
+    assert R.order_pieces(o3, NEW) == 1
+
+
 def test_breakeven_fallback_flat7_when_rows_lack_shipping():
     # righe legacy senza shipping_total -> fallback flat $7 (compatibilità)
     rows = [{"revenue": 100, "num_orders": 1, "cogs_total": 10}]

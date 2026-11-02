@@ -62,6 +62,41 @@ def test_fleur_de_lis_bracelet_does_not_catch_preorder_or_signet():
     assert sig == 3.00 and src2 == "exact-title"
 
 
+def test_variant_diamonds_rule_wins_over_product_title_signet():
+    # Variante "Engraved + Diamonds" su un signet = 12.92, vince sulla regola del titolo-prodotto.
+    cost, source = R.resolve_with_source(
+        "personalized-gold-plated-signet-ring", "Personalized Gold Plated Signet Ring",
+        order_date=NEW, variant_title="4.5 / Engraved + Diamonds")
+    assert cost == 12.92 and source == "variant"
+    # senza la variante Diamonds -> torna al prezzo del titolo-prodotto (11.46)
+    cost2, _ = R.resolve_with_source(
+        "personalized-gold-plated-signet-ring", "Personalized Gold Plated Signet Ring",
+        order_date=NEW, variant_title="4.5 / Engraved")
+    assert cost2 == 11.46
+    # case-insensitive e su altri signet
+    cost3, src3 = R.resolve_with_source(
+        None, "Personalized White Gold Plated Signet Ring",
+        order_date=NEW, variant_title="7 / engraved + DIAMONDS")
+    assert cost3 == 12.92 and src3 == "variant"
+    # la regola variante NON si applica prima del 2026-11-01 (resta il valore base)
+    old, _ = R.resolve_with_source(
+        "personalized-gold-plated-signet-ring", "Personalized Gold Plated Signet Ring",
+        order_date=OLD, variant_title="4.5 / Engraved + Diamonds")
+    assert old == 12.0
+
+
+def test_new_handles_from_point_3():
+    assert R.cogs_for_handle("turquoise-blue-signet-ring", None, order_date=NEW) == 2.95
+    assert R.cogs_for_handle("black-stone-square-signet-ring", None, order_date=NEW) == 2.95
+    assert R.cogs_for_handle("oval-carnelian-pinky-ring", None, order_date=NEW) == 3.45
+    assert R.cogs_for_handle("tiger-s-eye-signet-ring-copy", None, order_date=NEW) == 2.95
+    # bead/pearl/edge bracelets restano $3.00
+    assert R.cogs_for_handle("black-onyx-bead-bracelet", None, order_date=NEW) == 3.00
+    assert R.cogs_for_handle("white-edge-bracelet", None, order_date=NEW) == 3.00
+    # Malachite via exact-title (handle malachite-signet-ring)
+    assert R.cogs_for_handle("malachite-signet-ring", "Malachite Signet Ring", order_date=NEW) == 2.95
+
+
 def test_preorder_entries_untouched_on_new_date():
     # i PRE-ORDER (necklaces 3.50, bracelets/signets 3.00) restano invariati dal 2026-11-01
     assert R.cogs_for_handle(None, "Compass Necklace (PRE-ORDER)", order_date=NEW) == 3.50

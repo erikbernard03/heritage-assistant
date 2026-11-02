@@ -236,7 +236,9 @@ def compute_daily_metrics(
             handle = handle_map.get(int(product_id)) if product_id else None
             title = li.get("title") or ""
             qty = int(li.get("quantity", 1) or 1)
-            unit_cogs = resolver.cogs_for_handle(handle, title, order_date=day)
+            unit_cogs = resolver.cogs_for_handle(
+                handle, title, order_date=day, variant_title=li.get("variant_title"),
+            )
             line_cogs = unit_cogs * qty
             m.cogs_total += line_cogs
             m.line_items.append(

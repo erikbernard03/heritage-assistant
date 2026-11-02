@@ -122,6 +122,14 @@ bracelets:
 # =====================================================================================
 cogs_schedule:
   - effective_from: "2026-11-01"
+    # Regole a livello di VARIANTE (valutate PRIMA di tutto: vincono su exact-title/handle/
+    # famiglia). Un line item signet la cui variant_title contiene "diamonds" (es.
+    # "4.5 / Engraved + Diamonds") = 12.92. `variant_contains` è case-insensitive; `keywords`
+    # devono essere TUTTE nei token di handle+titolo del prodotto.
+    variant_rules:
+      - keywords: [signet]
+        variant_contains: diamonds
+        cogs: 12.92
     title_rules:
       - keywords: [personalized, coat, arms, necklace]   # Coat of Arms Necklace
         cogs: 8.27
@@ -153,8 +161,7 @@ cogs_schedule:
       # Coat of Arms
       "Personalized Coat of Arms Bracelet": 8.27
       "Personalized Coat of Arms Necklace": 8.27
-      # Ring with Diamond (signet variant) — TITOLO DA CONFERMARE sullo store
-      "Ring with Diamond": 12.92
+      # NB: "Engraved + Diamonds" NON è un prodotto ma una VARIANTE -> vedi variant_rules (12.92).
       # Black Onyx Signet Ring — deve vincere sulle famiglie signet
       "Black Onyx Signet Ring": 2.97
       # Stone signet rings — $2.95
@@ -187,8 +194,10 @@ cogs_schedule:
       minimal-oval-signet-ring: 3.45
       oval-pinky-ring: 3.45                   # Oval Onyx Pinky Ring
       cross-texture-ring: 3.53
-      # NON toccati (nessun valore fornito, restano $3): turquoise-blue-signet-ring,
-      # black-stone-square-signet-ring, oval-carnelian-pinky-ring
+      turquoise-blue-signet-ring: 2.95        # stone ring
+      black-stone-square-signet-ring: 2.95    # stone ring (NON square signet $8.62)
+      oval-carnelian-pinky-ring: 3.45
+      # bead / pearl / edge bracelets restano $3.00 (invariati)
     bracelets:
       cable-bracelet: 2.58
       fleur-de-lis-bracelet-1: 2.58

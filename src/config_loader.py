@@ -64,9 +64,32 @@ class _CogsPeriod:
             if kws and rule.get("cogs") is not None:
                 self.title_rules.append((kws, float(rule["cogs"])))
 
-    def match_title_rules(self, handle: Optional[str], title: Optional[str]) -> Optional[float]:
+        # Regole a livello di VARIANTE: (keywords_su_handle+titolo, variant_contains_lower, cogs).
+        self.variant_rules: list[tuple[list[str], str, float]] = []
+        for rule in (sections.get("variant_rules") or []):
+            kws = [str(k).strip().lower() for k in (rule.get("keywords") or [])]
+            vc = str(rule.get("variant_contains") or "").strip().lower()
+            if vc and rule.get("cogs") is not None:
+                self.variant_rules.append((kws, vc, float(rule["cogs"])))
+
+    def _tokens(self, handle: Optional[str], title: Optional[str]) -> set[str]:
         tokens = set((_slugify(handle or "") + "-" + _slugify(title or "")).split("-"))
         tokens.discard("")
+        return tokens
+
+    def match_variant_rules(self, handle: Optional[str], title: Optional[str],
+                            variant_title: Optional[str]) -> Optional[float]:
+        if not variant_title:
+            return None
+        vlow = str(variant_title).lower()
+        tokens = self._tokens(handle, title)
+        for kws, vc, cost in self.variant_rules:
+            if vc in vlow and all(kw in tokens for kw in kws):
+                return cost
+        return None
+
+    def match_title_rules(self, handle: Optional[str], title: Optional[str]) -> Optional[float]:
+        tokens = self._tokens(handle, title)
         for kws, cost in self.title_rules:
             if all(kw in tokens for kw in kws):
                 return cost
@@ -129,6 +152,8 @@ class CogsResolver:
             out[sec] = merged
         if overlay.get("title_rules") is not None:
             out["title_rules"] = overlay["title_rules"]
+        if overlay.get("variant_rules") is not None:
+            out["variant_rules"] = overlay["variant_rules"]
         if overlay.get("default_cogs") is not None:
             out["default_cogs"] = overlay["default_cogs"]
         return out
@@ -148,18 +173,24 @@ class CogsResolver:
 
     # -------------------------------------------------------------- COGS
     def resolve_with_source(
-        self, handle: Optional[str], title: Optional[str] = None, order_date=None
+        self, handle: Optional[str], title: Optional[str] = None, order_date=None,
+        variant_title: Optional[str] = None,
     ) -> tuple[float, str]:
         """
         Come cogs_for_handle ma ritorna anche QUALE layer ha deciso il costo:
-        'exact-title' | 'handle' | 'title-slug' | 'family' | 'default'.
+        'variant' | 'exact-title' | 'handle' | 'title-slug' | 'family' | 'default'.
 
         Priorità (nel periodo in vigore alla data dell'ordine):
+          0. VARIANTE (variant_rules: es. signet con variant_title "Diamonds") — vince su tutto
           1. TITOLO ESATTO (exact_titles)  2. handle esatto  3. titolo slugificato
           4. title_rules (famiglia)        5. default_cogs ($3)
         Costo 0 => default_cogs. Senza `order_date` usa i valori BASE (pre-primo-overlay).
         """
         period = self._period_for(order_date)
+
+        c = period.match_variant_rules(handle, title, variant_title)
+        if c is not None and c != 0:
+            return float(c), "variant"
 
         if title:
             c = period.exact_titles.get(_norm_title(title))
@@ -183,11 +214,12 @@ class CogsResolver:
         return period.default_cogs, "default"
 
     def cogs_for_handle(
-        self, handle: Optional[str], title: Optional[str] = None, order_date=None
+        self, handle: Optional[str], title: Optional[str] = None, order_date=None,
+        variant_title: Optional[str] = None,
     ) -> float:
         """COGS in USD per un prodotto, DATATO sulla data Rome dell'ordine (vedi
         resolve_with_source). Senza `order_date` usa i valori BASE."""
-        return self.resolve_with_source(handle, title, order_date)[0]
+        return self.resolve_with_source(handle, title, order_date, variant_title)[0]
 
     # -------------------------------------------------------------- spedizione
     def _build_shipping_periods(self) -> list[tuple[str, dict]]:
@@ -220,13 +252,16 @@ class CogsResolver:
         return periods
 
     @staticmethod
-    def _compile_excludes(phrases: list) -> list[tuple[str, bool]]:
-        """(slug, is_single_token) per ogni frase da escludere dal conteggio pezzi."""
-        out: list[tuple[str, bool]] = []
+    def _compile_excludes(phrases: list) -> list[list[str]]:
+        """Lista di frasi come SEQUENZE DI TOKEN (es. 'gift card' -> ['gift','card']).
+        Il match è per PAROLA INTERA: una frase esclude solo se i suoi token appaiono come
+        sottosequenza CONTIGUA nei token del titolo (slugificato). Così 'route' non può
+        agganciare 'reroute'/'en-route-ish' dentro una parola più lunga."""
+        out: list[list[str]] = []
         for p in phrases:
-            s = _slugify(str(p))
-            if s:
-                out.append((s, "-" not in s))
+            toks = [t for t in _slugify(str(p)).split("-") if t]
+            if toks:
+                out.append(toks)
         return out
 
     def _shipping_period_for(self, order_date) -> dict:
@@ -253,16 +288,17 @@ class CogsResolver:
         return ""
 
     @staticmethod
-    def _is_excluded(title: str, excludes: list[tuple[str, bool]]) -> bool:
-        tslug = _slugify(title)
-        if not tslug:
+    def _is_excluded(title: str, excludes: list[list[str]]) -> bool:
+        tokens = [t for t in _slugify(title).split("-") if t]
+        if not tokens:
             return False
-        tokens = set(tslug.split("-"))
-        for spec, single in excludes:
-            if single:
-                if spec in tokens:
-                    return True
-            elif spec in tslug:
+        n = len(tokens)
+        for phrase in excludes:
+            m = len(phrase)
+            if m == 0 or m > n:
+                continue
+            # sottosequenza contigua di PAROLE INTERE
+            if any(tokens[i:i + m] == phrase for i in range(n - m + 1)):
                 return True
         return False
 
