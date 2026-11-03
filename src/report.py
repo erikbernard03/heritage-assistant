@@ -240,6 +240,12 @@ def build_daily_report(
     )
 
 
+def _short_err(err) -> str:
+    """Messaggio d'errore su UNA riga, compatto (per il ⚠️ di persist): niente newline, ~160 char."""
+    s = " ".join(str(err).split())
+    return s[:160] if s else "unknown error"
+
+
 def _persist_warning_line(persist_failures: Optional[list]) -> str:
     """Riga ⚠️ che NOMINA le tabelle per-giorno NON salvate stanotte (mai più silenzioso)."""
     if not persist_failures:
@@ -1178,12 +1184,12 @@ def _persist(combined: DailyMetrics, stores: list, tw_summary: Optional[dict] = 
         try:
             fn()
         except Exception as exc:  # noqa: BLE001
-            failed.append(name)
+            failed.append(f"{name} ({_short_err(exc)})")
             print(f"[report] ⚠️ persist {name} FALLITO per {combined.day}: {exc}")
 
     def note(name: str, err: Optional[str]) -> None:
         if err:
-            failed.append(name)
+            failed.append(f"{name} ({_short_err(err)})")
 
     # 1) Combinati (una riga/giorno). daily_metrics per primo: è il dato canonico.
     all_orders = [o for (_l, orders, _h, _m) in stores for o in orders]
@@ -1305,13 +1311,13 @@ def backfill_daily_metrics(
 
             def _note(name: str, err: Optional[str]) -> None:
                 if err:
-                    day_failed.append(name)
+                    day_failed.append(f"{name} ({_short_err(err)})")
 
             def _guard(name: str, fn) -> None:
                 try:
                     fn()
                 except Exception as exc:  # noqa: BLE001
-                    day_failed.append(name)
+                    day_failed.append(f"{name} ({_short_err(exc)})")
                     print(f"[backfill] ⚠️ {name} FALLITO {w.day_str}: {exc}")
 
             _guard("daily_metrics", lambda: store.upsert_daily_metrics(m))

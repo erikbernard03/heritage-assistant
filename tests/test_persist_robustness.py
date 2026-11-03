@@ -56,7 +56,9 @@ def test_one_table_failure_does_not_block_the_others(monkeypatch):
     store = _Store(fail={"store_daily/com"})
     _patch_store(monkeypatch, store)
     failed = R._persist(_metrics(), _stores())
-    assert failed == ["store_daily/com"]
+    # ogni voce è "nome_tabella (errore)": una sola tabella fallita, con messaggio d'errore
+    assert len(failed) == 1 and failed[0].startswith("store_daily/com")
+    assert "boom" in failed[0]
     # product_units è stato chiamato PRIMA e NON è stato saltato dall'errore di store_daily
     assert "product_units/com" in store.calls
     assert "sales_by_country/com" in store.calls and "refunds_daily/com" in store.calls
@@ -66,7 +68,7 @@ def test_product_units_failure_is_reported_not_silent(monkeypatch):
     store = _Store(fail={"product_units/com"})
     _patch_store(monkeypatch, store)
     failed = R._persist(_metrics(), _stores())
-    assert "product_units/com" in failed
+    assert any(f.startswith("product_units/com") for f in failed)
     # le altre tabelle sono comunque passate
     assert "store_daily/com" in store.calls
 
